@@ -33,6 +33,7 @@ export type ScriptToStoryboardStepOutput = {
 type ClipInput = {
   id: string
   content: string | null
+  summary?: string | null
   characters: string | null
   location: string | null
   screenplay: string | null
@@ -276,7 +277,9 @@ export async function runScriptToStoryboardOrchestrator(
     clips.map(async (clip, i) => {
       const clipIndex = i + 1
       const clipContent = typeof clip.content === 'string' ? clip.content.trim() : ''
-      if (!clipContent) {
+      const clipSummary = typeof clip.summary === 'string' ? clip.summary.trim() : ''
+      const effectiveContent = clipContent || clipSummary
+      if (!effectiveContent && !clip.screenplay) {
         throw new Error(`Clip ${formatClipId(clip)} content is empty`)
       }
       const clipCharacters = parseClipCharacters(clip.characters)
@@ -305,7 +308,7 @@ export async function runScriptToStoryboardOrchestrator(
       if (screenplay) {
         phase1Prompt = phase1Prompt.replace('{clip_content}', `【剧本格式】\n${JSON.stringify(screenplay, null, 2)}`)
       } else {
-        phase1Prompt = phase1Prompt.replace('{clip_content}', clipContent)
+        phase1Prompt = phase1Prompt.replace('{clip_content}', effectiveContent)
       }
 
       const phase1Meta = withStepMeta(

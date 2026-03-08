@@ -236,6 +236,19 @@ export function findBuiltinPricingCatalogEntry(
 
   // Strip composite suffix (e.g. 'gemini-compatible:uuid' → 'gemini-compatible')
   const providerKey = provider.includes(':') ? provider.slice(0, provider.indexOf(':')) : provider
+
+  // Special case for openrouter: the modelId often contains the actual provider (e.g. anthropic/claude-...)
+  if ((providerKey === 'openrouter' || providerKey === 'dashscope' || providerKey === 'aliyun') && modelId.includes('/')) {
+    const [actualProvider, ...actualModelParts] = modelId.split('/')
+    const actualModelId = actualModelParts.join('/')
+    const crossKey = `${apiType}::${actualProvider}::${actualModelId}`
+    const crossEntry = loaded.exact.get(crossKey)
+    if (crossEntry) {
+      console.log(`[DEBUG] findBuiltinPricingCatalogEntry: cross-matched ${exactKey} -> ${crossKey}`)
+      return cloneEntry(crossEntry)
+    }
+  }
+
   if (providerKey !== provider) {
     const keyWithProviderKey = `${apiType}::${providerKey}::${modelId}`
     const keyEntry = loaded.exact.get(keyWithProviderKey)
@@ -250,6 +263,7 @@ export function findBuiltinPricingCatalogEntry(
     if (aliasEntry) return cloneEntry(aliasEntry)
   }
 
+  console.log(`[DEBUG] findBuiltinPricingCatalogEntry: FAILED to resolve ${exactKey}`)
   return null
 }
 

@@ -224,6 +224,7 @@ export async function handleScriptToStoryboardTask(job: Job<TaskJobData>) {
                     clips: clips.map((clip) => ({
                       id: clip.id,
                       content: clip.content,
+                      summary: clip.summary,
                       characters: clip.characters,
                       location: clip.location,
                       screenplay: clip.screenplay,

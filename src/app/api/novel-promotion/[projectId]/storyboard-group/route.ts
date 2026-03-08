@@ -68,7 +68,7 @@ export const POST = apiHandler(async (
     const newClip = await tx.novelPromotionClip.create({
       data: {
         episodeId,
-        summary: '手动添加的分镜组',
+        summary: 'Manually added clip group',
         content: '',
         location: null,
         characters: null,

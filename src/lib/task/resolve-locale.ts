@@ -46,12 +46,20 @@ export function resolveTaskLocaleFromBody(body?: unknown): Locale | null {
 export function resolveTaskLocale(request: NextRequest, body?: unknown): Locale | null {
   const payloadLocale = resolveTaskLocaleFromBody(body)
   if (payloadLocale) return payloadLocale
-  return readLocaleFromHeader(request)
+  const headerLocale = readLocaleFromHeader(request)
+  if (headerLocale) return headerLocale
+
+  // Fallback to defaultLocale instead of null to prevent INVALID_PARAMS errors for unsupported browser languages
+  const defaultCandidate = normalizeCandidate('en') || locales[0]
+  console.log('[DEBUG] resolveTaskLocale: No locale found, falling back to:', defaultCandidate)
+  return defaultCandidate
 }
 
 export function resolveRequiredTaskLocale(request: NextRequest, body?: unknown): Locale {
   const locale = resolveTaskLocale(request, body)
+  console.log('[DEBUG] resolveRequiredTaskLocale: resolved', locale)
   if (!locale) {
+    console.warn('[DEBUG] resolveRequiredTaskLocale: FAILED to resolve locale, fallback requested?')
     throw new ApiError('INVALID_PARAMS', {
       code: 'TASK_LOCALE_REQUIRED',
       field: 'meta.locale',

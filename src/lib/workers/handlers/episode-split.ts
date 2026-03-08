@@ -218,11 +218,11 @@ export async function handleEpisodeSplitTask(job: Job<TaskJobData>) {
           }
 
           const rawStartIndex = toValidBoundaryIndex(ep.startIndex, content.length)
-          if (rawStartIndex !== null && Math.abs(rawStartIndex - startMatch.startIndex) > 200) {
+          if (rawStartIndex !== null && Math.abs(rawStartIndex - startMatch.startIndex) > 500) {
             throw new Error(`episode_${idx + 1} startIndex 与 marker 偏差过大`)
           }
           const rawEndIndex = toValidBoundaryIndex(ep.endIndex, content.length)
-          if (rawEndIndex !== null && Math.abs(rawEndIndex - endMatch.endIndex) > 200) {
+          if (rawEndIndex !== null && Math.abs(rawEndIndex - endMatch.endIndex) > 500) {
             throw new Error(`episode_${idx + 1} endIndex 与 marker 偏差过大`)
           }
 

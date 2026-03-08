@@ -69,10 +69,20 @@ export async function maybeSubmitLLMTask(params: {
   priority?: number
 }) {
   const policy = getLLMTaskPolicy(params.type)
-  const observeEnabled = LLM_OBSERVE_ENABLED || policy.consoleEnabled
-  if (!observeEnabled) return null
-  if (!policy.consoleEnabled && !shouldRunAsyncTask(params.request, params.body)) return null
-  if (shouldRunSyncTask(params.request, params.body)) return null
+  const observeEnabled = (LLM_OBSERVE_ENABLED || policy.consoleEnabled) === true
+  console.log('[DEBUG] maybeSubmitLLMTask check observeEnabled:', observeEnabled)
+  if (!observeEnabled) {
+    console.log('[DEBUG] maybeSubmitLLMTask observeEnabled false, returning null')
+    return null
+  }
+  if (!policy.consoleEnabled && !shouldRunAsyncTask(params.request, params.body)) {
+    console.log('[DEBUG] maybeSubmitLLMTask not consoleEnabled and not async, returning null')
+    return null
+  }
+  if (shouldRunSyncTask(params.request, params.body)) {
+    console.log('[DEBUG] maybeSubmitLLMTask: shouldRunSyncTask true, returning null')
+    return null
+  }
 
   const payload = toObject(params.body)
   const displayMode = resolveDisplayMode(
@@ -96,61 +106,80 @@ export async function maybeSubmitLLMTask(params: {
       : defaultFlowMeta.flowStageTitle
 
   // 确保 payload 中包含真实的 analysisModel，用于精确计费
-  // 根据 worker 实际使用的 model 来源选择对应的配置
   const hasModel = typeof payload.analysisModel === 'string' && payload.analysisModel.trim()
     || typeof payload.model === 'string' && payload.model.trim()
+
+  console.log('[DEBUG] maybeSubmitLLMTask hasModel:', hasModel)
+
   if (!hasModel && isBillableTaskType(params.type)) {
     const useUserLevelConfig = params.type === TASK_TYPE.EPISODE_SPLIT_LLM
       || params.type === TASK_TYPE.REFERENCE_TO_CHARACTER
     if (useUserLevelConfig) {
-      const userConfig = await getUserModelConfig(params.userId)
+      console.log('[DEBUG] maybeSubmitLLMTask fetching userConfig')
+      const userConfig = await getUserModelConfig(params.userId).catch(e => {
+        console.error('[DEBUG] maybeSubmitLLMTask getUserModelConfig error:', e)
+        return { analysisModel: null }
+      })
       if (userConfig.analysisModel) {
         payload.analysisModel = userConfig.analysisModel
       }
     } else {
-      const modelConfig = await getProjectModelConfig(params.projectId, params.userId)
+      console.log('[DEBUG] maybeSubmitLLMTask fetching projectConfig')
+      const modelConfig = await getProjectModelConfig(params.projectId, params.userId).catch(e => {
+        console.error('[DEBUG] maybeSubmitLLMTask getProjectModelConfig error:', e)
+        return { analysisModel: null }
+      })
       if (modelConfig.analysisModel) {
         payload.analysisModel = modelConfig.analysisModel
       }
     }
   }
 
+  console.log('[DEBUG] maybeSubmitLLMTask final payload analysisModel:', payload.analysisModel)
+
   const billingInfo = isBillableTaskType(params.type)
     ? buildDefaultTaskBillingInfo(params.type, payload)
     : null
 
-  const taskResult = await submitTask({
-    userId: params.userId,
-    locale,
-    requestId: getRequestId(params.request),
-    projectId: params.projectId,
-    episodeId: params.episodeId || null,
-    type: params.type,
-    targetType: params.targetType,
-    targetId: params.targetId,
-    payload: {
-      ...payload,
-      sync: 1,
-      displayMode,
-      flowId,
-      flowStageIndex,
-      flowStageTotal,
-      flowStageTitle,
-      meta: {
-        ...payloadMeta,
-        route: params.routePath,
-        locale,
-        userTier: userTierFromPayload,
+  console.log('[DEBUG] maybeSubmitLLMTask billable:', isBillableTaskType(params.type), 'billingInfo truthy:', !!billingInfo)
+
+  try {
+    const taskResult = await submitTask({
+      userId: params.userId,
+      locale,
+      requestId: getRequestId(params.request),
+      projectId: params.projectId,
+      episodeId: params.episodeId || null,
+      type: params.type,
+      targetType: params.targetType,
+      targetId: params.targetId,
+      payload: {
+        ...payload,
+        sync: 1,
+        displayMode,
         flowId,
         flowStageIndex,
         flowStageTotal,
         flowStageTitle,
+        meta: {
+          ...payloadMeta,
+          route: params.routePath,
+          locale,
+          userTier: userTierFromPayload,
+          flowId,
+          flowStageIndex,
+          flowStageTotal,
+          flowStageTitle,
+        },
       },
-    },
-    dedupeKey: params.dedupeKey || null,
-    priority,
-    billingInfo,
-  })
-
-  return NextResponse.json(taskResult)
+      dedupeKey: params.dedupeKey || null,
+      priority,
+      billingInfo,
+    })
+    console.log('[DEBUG] maybeSubmitLLMTask submitTask success:', taskResult.taskId)
+    return NextResponse.json(taskResult)
+  } catch (error) {
+    console.error('[DEBUG] maybeSubmitLLMTask submitTask error:', error)
+    throw error
+  }
 }

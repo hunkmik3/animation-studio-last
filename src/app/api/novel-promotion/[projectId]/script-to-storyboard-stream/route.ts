@@ -12,9 +12,12 @@ export const POST = apiHandler(async (
 ) => {
   const { projectId } = await context.params
   const body = await request.json().catch(() => ({}))
+  console.log('[DEBUG] script-to-storyboard-stream body:', JSON.stringify(body))
   const episodeId = typeof body?.episodeId === 'string' ? body.episodeId.trim() : ''
+  console.log('[DEBUG] script-to-storyboard-stream episodeId:', episodeId)
 
   if (!episodeId) {
+    console.log('[DEBUG] script-to-storyboard-stream: episodeId missing, throwing 400')
     throw new ApiError('INVALID_PARAMS')
   }
 
@@ -28,6 +31,7 @@ export const POST = apiHandler(async (
     throw new ApiError('INVALID_PARAMS')
   }
 
+  console.log('[DEBUG] calling maybeSubmitLLMTask...')
   const asyncTaskResponse = await maybeSubmitLLMTask({
     request,
     userId: session.user.id,
@@ -44,7 +48,9 @@ export const POST = apiHandler(async (
     dedupeKey: `script_to_storyboard_run:${episodeId}`,
     priority: 2,
   })
+  console.log('[DEBUG] maybeSubmitLLMTask response truthy:', !!asyncTaskResponse)
   if (asyncTaskResponse) return asyncTaskResponse
 
+  console.log('[DEBUG] maybeSubmitLLMTask returned null, throwing 400')
   throw new ApiError('INVALID_PARAMS')
 })

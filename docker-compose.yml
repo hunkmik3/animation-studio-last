@@ -16,7 +16,7 @@ services:
       - "--default-authentication-plugin=mysql_native_password"
       - "--sql_mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -pwaoowaoo123"]
+      test: [ "CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -pwaoowaoo123" ]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -31,9 +31,9 @@ services:
       - "16379:6379"
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes"]
+    command: [ "redis-server", "--appendonly", "yes" ]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -77,9 +77,9 @@ services:
       BULL_BOARD_PASSWORD: ""
       # 日志
       LOG_UNIFIED_ENABLED: "true"
-      LOG_LEVEL: "INFO"
+      LOG_LEVEL: "DEBUG"
       LOG_FORMAT: "json"
-      LOG_DEBUG_ENABLED: "false"
+      LOG_DEBUG_ENABLED: "true"
       LOG_AUDIT_ENABLED: "true"
       LOG_SERVICE: "waoowaoo"
       LOG_REDACT_KEYS: "password,token,apiKey,apikey,authorization,cookie,secret,access_token,refresh_token"
@@ -91,6 +91,9 @@ services:
       - "13000:3000"
       - "13010:3010"
     volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
       - ./data:/app/data
       - ./docker-logs:/app/logs
     depends_on:
@@ -98,22 +101,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      sh -c "
-        npx prisma db push --skip-generate &&
-        (sleep 5 && echo '' &&
-        echo '╔══════════════════════════════════════════════════╗' &&
-        echo '║            waoowaoo is ready!                    ║' &&
-        echo '║                                                  ║' &&
-        echo '║  HTTP:  http://localhost:13000                    ║' &&
-        echo '║                                                  ║' &&
-        echo '║  For HTTPS, run Caddy on host:                   ║' &&
-        echo '║  caddy run --config Caddyfile                    ║' &&
-        echo '║  Then open: https://localhost:1443                ║' &&
-        echo '╚══════════════════════════════════════════════════╝' &&
-        echo '') &
-        npm run start
-      "
+    command: npm run dev
 
 volumes:
   mysql_data:
