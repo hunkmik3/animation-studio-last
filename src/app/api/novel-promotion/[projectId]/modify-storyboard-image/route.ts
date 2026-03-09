@@ -8,7 +8,7 @@ import { TASK_TYPE } from '@/lib/task/types'
 import { buildDefaultTaskBillingInfo } from '@/lib/billing'
 import { hasPanelImageOutput } from '@/lib/task/has-output'
 import { withTaskUiPayload } from '@/lib/task/ui-payload'
-import { getProjectModelConfig, buildImageBillingPayload } from '@/lib/config-service'
+import { getProjectModelConfig, buildImageBillingPayload, checkRequiredModels, getMissingConfigError } from '@/lib/config-service'
 import { sanitizeImageInputsForTaskPayload } from '@/lib/media/outbound-image'
 
 function toObject(value: unknown): Record<string, unknown> {
@@ -98,6 +98,12 @@ export const POST = apiHandler(async (
   const hasOutputAtStart = await hasPanelImageOutput(panel.id)
 
   const projectModelConfig = await getProjectModelConfig(projectId, session.user.id)
+
+  const missingFields = checkRequiredModels(projectModelConfig, ['editModel'])
+  if (missingFields.length > 0) {
+    throw new ApiError('INVALID_PARAMS', { message: getMissingConfigError(missingFields) })
+  }
+
   const imageModel = projectModelConfig.editModel
 
   let billingPayload: Record<string, unknown>

@@ -6,7 +6,7 @@ import { resolveRequiredTaskLocale } from '@/lib/task/resolve-locale'
 import { TASK_TYPE } from '@/lib/task/types'
 import { buildDefaultTaskBillingInfo } from '@/lib/billing'
 import { withTaskUiPayload } from '@/lib/task/ui-payload'
-import { getProjectModelConfig, buildImageBillingPayload } from '@/lib/config-service'
+import { getProjectModelConfig, buildImageBillingPayload, checkRequiredModels, getMissingConfigError } from '@/lib/config-service'
 import {
   hasCharacterAppearanceOutput,
   hasLocationImageOutput
@@ -57,6 +57,13 @@ export const POST = apiHandler(async (
     })
 
   const projectModelConfig = await getProjectModelConfig(projectId, session.user.id)
+
+  const requiredField = type === 'character' ? 'characterModel' : 'locationModel'
+  const missingFields = checkRequiredModels(projectModelConfig, [requiredField])
+  if (missingFields.length > 0) {
+    throw new ApiError('INVALID_PARAMS', { message: getMissingConfigError(missingFields) })
+  }
+
   const imageModel = type === 'character'
     ? projectModelConfig.characterModel
     : projectModelConfig.locationModel

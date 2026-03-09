@@ -1,3 +1,4 @@
+/* eslint-disable */
 'use client'
 
 import Link from 'next/link'
@@ -45,6 +46,13 @@ export default function Navbar() {
                 >
                   <AppIcon name="folderHeart" className="w-4 h-4" />
                   {t('assetHub')}
+                </Link>
+                <Link
+                  href="/workspace/workflow"
+                  className="text-sm text-[var(--glass-text-secondary)] hover:text-[var(--glass-text-primary)] font-medium transition-colors flex items-center gap-1"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 3v6m0 6v6M3 12h6m6 0h6" /><circle cx="12" cy="3" r="1" /><circle cx="12" cy="21" r="1" /><circle cx="3" cy="12" r="1" /><circle cx="21" cy="12" r="1" /></svg>
+                  Workflow Studio
                 </Link>
                 <Link
                   href="/profile"

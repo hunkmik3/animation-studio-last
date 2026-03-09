@@ -5,7 +5,7 @@ import { submitTask } from '@/lib/task/submitter'
 import { resolveRequiredTaskLocale } from '@/lib/task/resolve-locale'
 import { TASK_TYPE } from '@/lib/task/types'
 import { buildDefaultTaskBillingInfo } from '@/lib/billing'
-import { getProjectModelConfig, buildImageBillingPayload } from '@/lib/config-service'
+import { getProjectModelConfig, buildImageBillingPayload, checkRequiredModels, getMissingConfigError } from '@/lib/config-service'
 import { prisma } from '@/lib/prisma'
 
 export const POST = apiHandler(async (
@@ -85,6 +85,12 @@ export const POST = apiHandler(async (
   })
 
   const projectModelConfig = await getProjectModelConfig(projectId, session.user.id)
+
+  const missingFields = checkRequiredModels(projectModelConfig, ['storyboardModel'])
+  if (missingFields.length > 0) {
+    throw new ApiError('INVALID_PARAMS', { message: getMissingConfigError(missingFields) })
+  }
+
   const imageModel = projectModelConfig.storyboardModel
 
   let billingPayload: Record<string, unknown>

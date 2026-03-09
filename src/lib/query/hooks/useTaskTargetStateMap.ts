@@ -140,9 +140,11 @@ function logMergeDecision(params: {
     params.currentPhase || '',
     params.whitelist.join(','),
   ].join('|')
-  const last = mergeTraceSignatureByKey.get(params.key)
+  // Use a composite key that includes the whitelist so different task types for the same panel don't thrash the console logs
+  const cacheKey = `${params.key}:${params.whitelist.join(',')}`
+  const last = mergeTraceSignatureByKey.get(cacheKey)
   if (last === signature) return
-  mergeTraceSignatureByKey.set(params.key, signature)
+  mergeTraceSignatureByKey.set(cacheKey, signature)
   taskTargetStateLogger.info({
     action: 'task-state.merge.decision',
     message: 'task state merge decision',
@@ -405,10 +407,10 @@ export function useTaskTargetStateMap(
       }
     }
     return map
-  }, [normalizedTargets, overlayQuery.data, query.data])
+  }, [normalizedTargets, overlayQuery.data, query.data, projectId])
 
   const mergedData = useMemo(() => {
-    return normalizedTargets.map((target) =>
+    return normalizedTargets.map((target: TaskTargetStateQuery) =>
       mergedByKey.get(stateKey(target.targetType, target.targetId)) || buildIdleState(target),
     )
   }, [mergedByKey, normalizedTargets])

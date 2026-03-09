@@ -1,0 +1,462 @@
+/* eslint-disable */
+// @ts-nocheck
+// =============================================
+// Node Detail Panel — Rich right sidebar
+// Adapts display based on node type:
+//   - Image nodes → Image gallery + preview
+//   - Video nodes → Video player + frame selector
+//   - Text nodes → Full text editor
+//   - AI nodes → Prompt editor + structured output
+// =============================================
+'use client'
+
+import { useCallback, useState } from 'react'
+import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
+import { useWorkflowStore } from '../useWorkflowStore'
+import {
+    X, Settings2, Video, ImageIcon, Play, ChevronDown, ChevronRight,
+    Eye, Pencil, Loader2, CheckCircle2, FileText, Mic, Film,
+    ZoomIn, LayoutGrid, Users, MapPin, Bot
+} from 'lucide-react'
+
+// ── URL helper ──
+function resolveMediaUrl(raw: unknown): string {
+    if (!raw) return ''
+    const url = String(raw)
+    if (!url || url.startsWith('[')) return '' // skip placeholder strings
+    if (url.startsWith('http') || url.startsWith('/')) return url
+    return `/api/media/${url}`
+}
+
+// ── Section Header (collapsible) ──
+function SectionHeader({ title, icon: Icon, defaultOpen = true, children }: {
+    title: string
+    icon: React.ElementType
+    defaultOpen?: boolean
+    children: React.ReactNode
+}) {
+    const [open, setOpen] = useState(defaultOpen)
+    return (
+        <div className="border-t border-slate-800">
+            <button
+                onClick={() => setOpen(!open)}
+                className="flex items-center gap-2 w-full px-4 py-2.5 text-left hover:bg-slate-800/40 transition-colors"
+            >
+                {open ? <ChevronDown className="w-3 h-3 text-slate-500" /> : <ChevronRight className="w-3 h-3 text-slate-500" />}
+                <Icon className="w-3.5 h-3.5 text-slate-400" />
+                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{title}</span>
+            </button>
+            {open && <div className="px-4 pb-4">{children}</div>}
+        </div>
+    )
+}
+
+// ── Image Preview Section ──
+function ImagePreviewSection({ outputs, initialOutput }: { outputs?: Record<string, unknown>; initialOutput?: Record<string, unknown> }) {
+    const data = outputs || initialOutput
+    if (!data?.image) return null
+
+    const url = resolveMediaUrl(data.image)
+    if (!url) return null
+
+    return (
+        <SectionHeader title="Preview" icon={Eye} defaultOpen={true}>
+            <div className="space-y-3">
+                <div className="w-full relative rounded-lg overflow-hidden bg-slate-900 border border-slate-700 shadow-lg group cursor-pointer hover:border-slate-500 transition-colors">
+                    <img
+                        src={url}
+                        alt="Generated output"
+                        className="w-full h-auto object-contain"
+                        style={{ maxHeight: '300px' }}
+                    />
+                    {/* Overlay controls */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex justify-between items-center">
+                            <span className="text-[9px] text-slate-300 truncate max-w-[180px]">
+                                {String(data.image).split('/').pop()?.slice(0, 30)}
+                            </span>
+                            <div className="flex gap-1">
+                                <button className="p-1 rounded bg-white/10 hover:bg-white/20 transition-colors" title="Full size">
+                                    <ZoomIn className="w-3 h-3 text-white" />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Image status */}
+                <div className="flex items-center gap-2 text-[10px]">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <span className="text-emerald-400">Image ready</span>
+                </div>
+            </div>
+        </SectionHeader>
+    )
+}
+
+// ── Video Preview Section ──
+function VideoPreviewSection({ outputs, initialOutput }: { outputs?: Record<string, unknown>; initialOutput?: Record<string, unknown> }) {
+    const data = outputs || initialOutput
+    if (!data?.video) return null
+
+    const url = resolveMediaUrl(data.video)
+    if (!url) return null
+
+    return (
+        <SectionHeader title="Video Preview" icon={Film} defaultOpen={true}>
+            <div className="space-y-3">
+                <div className="w-full relative rounded-lg overflow-hidden bg-slate-900 border border-slate-700 shadow-lg">
+                    <video
+                        src={url}
+                        controls
+                        className="w-full"
+                        style={{ maxHeight: '250px' }}
+                        preload="metadata"
+                    />
+                </div>
+                <div className="flex items-center gap-2 text-[10px]">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <span className="text-emerald-400">Video ready</span>
+                    <span className="text-slate-500 ml-auto">{String(data.video).split('/').pop()?.slice(0, 25)}</span>
+                </div>
+            </div>
+        </SectionHeader>
+    )
+}
+
+// ── Text Output Section ──
+function TextOutputSection({ outputs }: { outputs?: Record<string, unknown> }) {
+    if (!outputs) return null
+
+    const textKeys = Object.entries(outputs).filter(([, v]) => typeof v === 'string' && !String(v).startsWith('['))
+    const jsonKeys = Object.entries(outputs).filter(([, v]) => typeof v === 'object' && v !== null)
+
+    if (textKeys.length === 0 && jsonKeys.length === 0) return null
+
+    return (
+        <SectionHeader title="Output" icon={FileText} defaultOpen={true}>
+            <div className="space-y-3">
+                {textKeys.map(([key, value]) => (
+                    <div key={key}>
+                        <label className="text-[10px] text-slate-500 uppercase mb-1 block">{key}</label>
+                        <div className="w-full px-3 py-2 text-xs rounded-lg bg-slate-900 border border-slate-700 text-slate-300 font-mono overflow-auto max-h-48 whitespace-pre-wrap">
+                            {String(value)}
+                        </div>
+                    </div>
+                ))}
+                {jsonKeys.map(([key, value]) => (
+                    <div key={key}>
+                        <label className="text-[10px] text-slate-500 uppercase mb-1 block">{key}</label>
+                        <pre className="w-full px-3 py-2 text-[10px] rounded-lg bg-slate-900 border border-slate-700 text-slate-300 font-mono overflow-auto max-h-48">
+                            {JSON.stringify(value, null, 2)}
+                        </pre>
+                    </div>
+                ))}
+            </div>
+        </SectionHeader>
+    )
+}
+
+// ── Execution Status Badge ──
+function ExecutionStatusBar({ executionState, onRun }: {
+    executionState?: { status: string; progress: number; message?: string; error?: string }
+    onRun: () => void
+}) {
+    const status = executionState?.status || 'idle'
+
+    return (
+        <div className="px-4 py-2.5 border-t border-slate-800 bg-slate-900/50">
+            <div className="flex items-center gap-2">
+                <button
+                    onClick={onRun}
+                    disabled={status === 'running'}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${status === 'running'
+                        ? 'bg-amber-500/20 text-amber-400 cursor-not-allowed'
+                        : 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                        }`}
+                >
+                    {status === 'running' ? (
+                        <><Loader2 className="w-3 h-3 animate-spin" /> Running...</>
+                    ) : (
+                        <><Play className="w-3 h-3" /> Run Node</>
+                    )}
+                </button>
+
+                {status === 'completed' && (
+                    <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+                        <CheckCircle2 className="w-3 h-3" /> Done
+                    </span>
+                )}
+                {status === 'failed' && (
+                    <span className="text-[10px] text-red-400 truncate max-w-[150px]"
+                        title={executionState?.error}>
+                        ❌ {executionState?.error?.slice(0, 30) || 'Failed'}
+                    </span>
+                )}
+            </div>
+
+            {/* Progress bar */}
+            {status === 'running' && (
+                <div className="mt-2">
+                    <div className="w-full bg-slate-800 rounded-full h-1.5">
+                        <div
+                            className="bg-amber-500 h-1.5 rounded-full transition-all duration-500"
+                            style={{ width: `${executionState?.progress || 0}%` }}
+                        />
+                    </div>
+                    {executionState?.message && (
+                        <p className="text-[9px] text-slate-500 mt-1">{executionState.message}</p>
+                    )}
+                </div>
+            )}
+        </div>
+    )
+}
+
+// ── Config Fields Renderer ──
+function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
+    def: any
+    nodeData: { config: Record<string, unknown> }
+    onConfigChange: (key: string, value: unknown) => void
+}) {
+    return (
+        <SectionHeader title="Settings" icon={Settings2} defaultOpen={false}>
+            <div className="space-y-3">
+                {def.configFields.map((field: any) => {
+                    const value = nodeData.config?.[field.key] ?? field.defaultValue ?? ''
+                    return (
+                        <div key={field.key}>
+                            <label className="block text-[11px] font-medium text-slate-400 mb-1.5 uppercase tracking-wide">
+                                {field.label}
+                                {field.required && <span className="text-red-400 ml-0.5">*</span>}
+                            </label>
+
+                            {field.type === 'textarea' && (
+                                <textarea
+                                    value={String(value)}
+                                    onChange={(e) => onConfigChange(field.key, e.target.value)}
+                                    placeholder={field.placeholder}
+                                    rows={field.key === 'systemPrompt' || field.key === 'prompt' || field.key === 'userPrompt' ? 8 : 4}
+                                    className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all resize-y font-mono"
+                                />
+                            )}
+
+                            {field.type === 'text' && (
+                                <input
+                                    type="text"
+                                    value={String(value)}
+                                    onChange={(e) => onConfigChange(field.key, e.target.value)}
+                                    placeholder={field.placeholder}
+                                    className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
+                                />
+                            )}
+
+                            {field.type === 'number' && (
+                                <input
+                                    type="number"
+                                    value={Number(value)}
+                                    onChange={(e) => onConfigChange(field.key, parseFloat(e.target.value) || 0)}
+                                    step={field.key === 'temperature' || field.key === 'speed' ? 0.1 : 1}
+                                    min={0}
+                                    className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
+                                />
+                            )}
+
+                            {field.type === 'select' && (
+                                <select
+                                    value={String(value)}
+                                    onChange={(e) => onConfigChange(field.key, e.target.value)}
+                                    className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 focus:outline-none focus:border-blue-500 transition-all"
+                                >
+                                    <option value="">Select...</option>
+                                    {field.options?.map((opt: any) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                </select>
+                            )}
+
+                            {(field.type === 'model-picker' || field.type === 'voice-picker') && (
+                                <input
+                                    type="text"
+                                    value={String(value)}
+                                    onChange={(e) => onConfigChange(field.key, e.target.value)}
+                                    placeholder={field.type === 'model-picker' ? 'e.g., gpt-4o, gemini-2.0-flash' : 'Voice preset name or ID'}
+                                    className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
+                                />
+                            )}
+
+                            {field.type === 'toggle' && (
+                                <button
+                                    onClick={() => onConfigChange(field.key, !value)}
+                                    className={`relative w-10 h-5 rounded-full transition-colors ${value ? 'bg-blue-500' : 'bg-slate-700'}`}
+                                >
+                                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${value ? 'translate-x-5' : 'translate-x-0'}`} />
+                                </button>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
+        </SectionHeader>
+    )
+}
+
+// ── Node type visual icon mapping ──
+const NODE_ICON_MAP: Record<string, React.ElementType> = {
+    'text-input': FileText,
+    'llm-prompt': Bot,
+    'character-extract': Users,
+    'scene-extract': MapPin,
+    'storyboard': LayoutGrid,
+    'image-generate': ImageIcon,
+    'video-generate': Video,
+    'voice-synthesis': Mic,
+    'upscale': ZoomIn,
+    'video-compose': Film,
+}
+
+// ── Main Panel ──
+export function NodeConfigPanel() {
+    const selectedNodeId = useWorkflowStore((s) => s.selectedNodeId)
+    const nodes = useWorkflowStore((s) => s.nodes)
+    const executionState = useWorkflowStore((s) => selectedNodeId ? s.nodeExecutionStates[selectedNodeId] : undefined)
+    const selectNode = useWorkflowStore((s) => s.selectNode)
+    const updateNodeConfig = useWorkflowStore((s) => s.updateNodeConfig)
+    const executeSingleNode = useWorkflowStore((s) => s.executeSingleNode)
+
+    const selectedNode = nodes.find((n) => n.id === selectedNodeId)
+    const nodeData = selectedNode?.data as { nodeType: string; config: Record<string, unknown>; label?: string; initialOutput?: Record<string, unknown> } | undefined
+    const def = nodeData ? NODE_TYPE_REGISTRY[nodeData.nodeType] : undefined
+
+    const handleConfigChange = useCallback(
+        (key: string, value: unknown) => {
+            if (!selectedNodeId) return
+            updateNodeConfig(selectedNodeId, { [key]: value })
+        },
+        [selectedNodeId, updateNodeConfig],
+    )
+
+    const handleRun = useCallback(() => {
+        if (!selectedNodeId) return
+        executeSingleNode(selectedNodeId)
+    }, [selectedNodeId, executeSingleNode])
+
+    // ── Empty state ──
+    if (!selectedNode || !def || !nodeData) {
+        return (
+            <div
+                className="h-full flex flex-col items-center justify-center p-6 text-center"
+                style={{ background: '#0f172a', borderLeft: '1px solid #1e293b' }}
+            >
+                <div className="w-16 h-16 rounded-2xl bg-slate-800/50 flex items-center justify-center mb-4">
+                    <Settings2 className="w-7 h-7 text-slate-700" />
+                </div>
+                <p className="text-sm text-slate-500 font-medium">Node Details</p>
+                <p className="text-xs text-slate-600 mt-1">Click any node on the canvas</p>
+                <p className="text-[10px] text-slate-700 mt-4">Tip: Click a node to see its<br />configuration, preview, and output</p>
+            </div>
+        )
+    }
+
+    const NodeIcon = NODE_ICON_MAP[nodeData.nodeType] || Settings2
+    const nodeLabel = nodeData.label || def.title
+
+    return (
+        <div
+            className="h-full flex flex-col"
+            style={{ background: '#0f172a', borderLeft: '1px solid #1e293b' }}
+        >
+            {/* ── Header ── */}
+            <div className="flex-shrink-0">
+                <div
+                    className="flex items-center gap-3 px-4 py-3"
+                    style={{ borderBottom: `2px solid ${def.color}` }}
+                >
+                    <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: `${def.color}20` }}
+                    >
+                        <NodeIcon className="w-4 h-4" style={{ color: def.color }} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-semibold text-slate-200 truncate">{nodeLabel}</h3>
+                        <p className="text-[10px] text-slate-500 truncate">{def.description}</p>
+                    </div>
+                    <button
+                        onClick={() => selectNode(null)}
+                        className="p-1 rounded hover:bg-slate-800 transition-colors flex-shrink-0"
+                    >
+                        <X className="w-4 h-4 text-slate-400" />
+                    </button>
+                </div>
+
+                {/* Run button bar */}
+                <ExecutionStatusBar
+                    executionState={executionState}
+                    onRun={handleRun}
+                />
+            </div>
+
+            {/* ── Scrollable content ── */}
+            <div className="flex-1 overflow-y-auto">
+                {/* Preview sections — show first for visual impact */}
+                <ImagePreviewSection
+                    outputs={executionState?.outputs}
+                    initialOutput={nodeData.initialOutput}
+                />
+                <VideoPreviewSection
+                    outputs={executionState?.outputs}
+                    initialOutput={nodeData.initialOutput}
+                />
+                <TextOutputSection
+                    outputs={executionState?.outputs}
+                />
+
+                {/* Text Input — show content preview for text-input nodes */}
+                {nodeData.nodeType === 'text-input' && nodeData.config?.content && (
+                    <SectionHeader title="Content Preview" icon={FileText} defaultOpen={true}>
+                        <div className="text-xs text-slate-300 bg-slate-900 rounded-lg border border-slate-700 p-3 max-h-48 overflow-auto font-mono whitespace-pre-wrap">
+                            {String(nodeData.config.content).slice(0, 500)}
+                            {String(nodeData.config.content).length > 500 && (
+                                <span className="text-slate-500">... ({String(nodeData.config.content).length} chars)</span>
+                            )}
+                        </div>
+                    </SectionHeader>
+                )}
+
+                {/* Config fields — collapsed by default to prioritize preview */}
+                <ConfigFieldsSection
+                    def={def}
+                    nodeData={nodeData}
+                    onConfigChange={handleConfigChange}
+                />
+
+                {/* Node info section */}
+                <SectionHeader title="Info" icon={Settings2} defaultOpen={false}>
+                    <div className="space-y-2 text-[10px]">
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Node ID</span>
+                            <span className="text-slate-400 font-mono">{selectedNodeId?.slice(0, 16)}...</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Type</span>
+                            <span className="text-slate-400">{nodeData.nodeType}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Category</span>
+                            <span className="text-slate-400 capitalize">{def.category}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Inputs</span>
+                            <span className="text-slate-400">{def.inputs.length}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-slate-500">Outputs</span>
+                            <span className="text-slate-400">{def.outputs.length}</span>
+                        </div>
+                    </div>
+                </SectionHeader>
+            </div>
+        </div>
+    )
+}

@@ -188,6 +188,7 @@ export default function WorkspaceHeaderShell({
       />
 
       <WorkspaceTopActions
+        projectId={projectId}
         onOpenAssetLibrary={onOpenAssetLibrary}
         onOpenSettings={onOpenSettingsModal}
         onRefresh={onRefresh}
