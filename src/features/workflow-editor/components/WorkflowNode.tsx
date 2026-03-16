@@ -12,7 +12,8 @@ import { useWorkflowStore } from '../useWorkflowStore'
 import {
     FileText, Bot, Users, MapPin, LayoutGrid, ImageIcon,
     Video, Mic, ZoomIn, Film, GitBranch, Download,
-    Trash2, Loader2, CheckCircle2, XCircle, Clock, Play
+    Trash2, Loader2, CheckCircle2, XCircle, Clock, Play,
+    SkipForward, RotateCcw
 } from 'lucide-react'
 import type { ExecutionStatus } from '@/lib/workflow-engine/types'
 
@@ -38,6 +39,8 @@ function StatusBadge({ status }: { status: ExecutionStatus }) {
             return <XCircle className="w-3.5 h-3.5 text-red-400" />
         case 'pending':
             return <Clock className="w-3.5 h-3.5 text-amber-400" />
+        case 'skipped':
+            return <SkipForward className="w-3.5 h-3.5 text-cyan-400" />
         default:
             return null
     }
@@ -50,6 +53,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
     const selectNode = useWorkflowStore((s) => s.selectNode)
     const removeNode = useWorkflowStore((s) => s.removeNode)
     const executeSingleNode = useWorkflowStore((s) => s.executeSingleNode)
+    const forceRerunNode = useWorkflowStore((s) => s.forceRerunNode)
     const executionState = useWorkflowStore((s) => s.nodeExecutionStates[id])
 
     const handleClick = useCallback(() => {
@@ -65,6 +69,11 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
         e.stopPropagation()
         executeSingleNode(id)
     }, [id, executeSingleNode])
+
+    const handleForceRerun = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation()
+        forceRerunNode(id)
+    }, [id, forceRerunNode])
 
     if (!def) return null
 
@@ -101,6 +110,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
           rounded-xl overflow-hidden shadow-lg transition-all duration-200
           ${selected ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-[#0f172a]' : ''}
           ${status === 'running' ? 'ring-2 ring-blue-400/50 animate-pulse' : ''}
+          ${status === 'skipped' ? 'ring-1 ring-cyan-400/40' : ''}
         `}
                 style={{ background: '#1e293b', border: '1px solid #334155' }}
             >
@@ -114,14 +124,24 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                         {nodeData.label || def.title}
                     </span>
                     <StatusBadge status={status} />
-                    <button
-                        onClick={handleRunSingle}
-                        disabled={status === 'running'}
-                        className={`opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-emerald-500/20 ${status === 'running' ? 'cursor-not-allowed opacity-50' : ''}`}
-                        title="Run this node"
-                    >
-                        <Play className="w-3 h-3 text-emerald-400" />
-                    </button>
+                    {(status === 'completed' || status === 'skipped') ? (
+                        <button
+                            onClick={handleForceRerun}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-500/20"
+                            title="Force re-run this node"
+                        >
+                            <RotateCcw className="w-3 h-3 text-amber-400" />
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleRunSingle}
+                            disabled={status === 'running'}
+                            className={`opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-emerald-500/20 ${status === 'running' ? 'cursor-not-allowed opacity-50' : ''}`}
+                            title="Run this node"
+                        >
+                            <Play className="w-3 h-3 text-emerald-400" />
+                        </button>
+                    )}
                     <button
                         onClick={handleDelete}
                         className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-red-500/20"
@@ -202,6 +222,12 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                             {executionState.message && (
                                 <div className="text-[9px] text-blue-400 mt-0.5 truncate">{executionState.message}</div>
                             )}
+                        </div>
+                    )}
+
+                    {executionState && status === 'skipped' && (
+                        <div className="mt-1 p-1 rounded bg-cyan-500/10 text-[9px] text-cyan-400 truncate">
+                            Resumed from cache
                         </div>
                     )}
 

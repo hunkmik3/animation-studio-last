@@ -967,6 +967,7 @@ model WorkflowExecution {
   userId      String
   status      String    @default("pending")
   nodeStates  String    @db.LongText
+  outputData  String?   @db.LongText  // JSON: { [nodeId]: { outputs, configSnapshot, completedAt } }
   startedAt   DateTime?
   completedAt DateTime?
   error       String?   @db.Text

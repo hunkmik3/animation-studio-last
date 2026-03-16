@@ -20,6 +20,19 @@ export const GET = apiHandler(async (request: NextRequest) => {
         include: {
             novelPromotionData: {
                 include: {
+                    characters: {
+                        orderBy: { createdAt: 'asc' },
+                        include: {
+                            appearances: {
+                                orderBy: { appearanceIndex: 'asc' },
+                                take: 3,
+                            }
+                        }
+                    },
+                    locations: {
+                        orderBy: { createdAt: 'asc' },
+                        include: { selectedImage: true }
+                    },
                     episodes: {
                         orderBy: { createdAt: 'desc' },
                         take: 1,
@@ -57,6 +70,8 @@ export const GET = apiHandler(async (request: NextRequest) => {
 
     const novelProj = project.novelPromotionData
     const storyId = 'story_root'
+    const characters = novelProj.characters || []
+    const locations = novelProj.locations || []
 
     // 1. Root Story Node
     nodes.push({
@@ -70,6 +85,61 @@ export const GET = apiHandler(async (request: NextRequest) => {
             isRootStory: true
         }
     })
+
+    // 2. Characters node (if characters exist in project)
+    if (characters.length > 0) {
+        const charData = (characters as any[]).map(c => {
+            // Parse profileData JSON if available
+            let profileInfo: Record<string, unknown> = {}
+            try { if (c.profileData) profileInfo = JSON.parse(c.profileData) } catch { /**/ }
+            const latestAppearance = c.appearances?.[0]
+            return {
+                id: c.id,
+                name: c.name,
+                description: profileInfo.description || profileInfo.intro || c.introduction || '',
+                appearance: latestAppearance?.description || profileInfo.appearance || '',
+                imageUrl: latestAppearance?.imageUrl || '',
+                appearanceId: latestAppearance?.id || '',
+                voiceId: c.voiceId || '',
+            }
+        })
+        nodes.push({
+            id: 'project_characters',
+            type: 'workflowNode',
+            position: { x: -250, y: -280 },
+            data: {
+                nodeType: 'text-input',
+                label: `👥 Characters (${characters.length})`,
+                config: { content: JSON.stringify(charData.map(c => ({ name: c.name, description: c.description, appearance: c.appearance })), null, 2) },
+                isCharacterSummary: true,
+                characterImages: charData.filter(c => c.imageUrl).map(c => ({ name: c.name, imageUrl: c.imageUrl })),
+                initialOutput: { characters: charData }
+            }
+        })
+    }
+
+    // 3. Locations node (if locations exist in project)
+    if (locations.length > 0) {
+        const locData = (locations as any[]).map(l => ({
+            id: l.id,
+            name: l.name,
+            description: l.summary || '',
+            imageUrl: l.selectedImage?.imageUrl || '',
+        }))
+        nodes.push({
+            id: 'project_locations',
+            type: 'workflowNode',
+            position: { x: -250, y: 280 },
+            data: {
+                nodeType: 'text-input',
+                label: `📍 Locations (${locations.length})`,
+                config: { content: JSON.stringify(locData.map(l => ({ name: l.name, description: l.description })), null, 2) },
+                isLocationSummary: true,
+                locationImages: locData.filter(l => l.imageUrl).map(l => ({ name: l.name, imageUrl: l.imageUrl })),
+                initialOutput: { scenes: locData }
+            }
+        })
+    }
 
     let currentGlobalY = 50
 

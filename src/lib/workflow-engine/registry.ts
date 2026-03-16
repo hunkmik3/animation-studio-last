@@ -43,7 +43,7 @@ const LLM_PROMPT_NODE: WorkflowNodeTypeDefinition = {
         { key: 'systemPrompt', label: 'System Prompt', type: 'textarea', placeholder: 'You are a helpful assistant...', required: true },
         { key: 'userPrompt', label: 'User Prompt Template', type: 'textarea', placeholder: 'Analyze the following text:\n{input}', required: true },
         { key: 'model', label: 'AI Model', type: 'model-picker', required: true },
-        { key: 'temperature', label: 'Temperature', type: 'number', defaultValue: 0.7 },
+        { key: 'temperature', label: 'Temperature', type: 'slider', min: 0, max: 2, step: 0.1, defaultValue: 0.7 },
         { key: 'outputFormat', label: 'Output Format', type: 'select', options: [{ label: 'Plain Text', value: 'text' }, { label: 'JSON', value: 'json' }], defaultValue: 'text' },
     ],
     defaultConfig: { systemPrompt: '', userPrompt: '{input}', model: '', temperature: 0.7, outputFormat: 'text' },
@@ -234,7 +234,7 @@ const VOICE_SYNTHESIS_NODE: WorkflowNodeTypeDefinition = {
             ], required: true
         },
         { key: 'voice', label: 'Default Voice', type: 'voice-picker' },
-        { key: 'speed', label: 'Speed', type: 'number', defaultValue: 1.0 },
+        { key: 'speed', label: 'Speed', type: 'slider', min: 0.5, max: 2.0, step: 0.1, defaultValue: 1.0 },
     ],
     defaultConfig: { provider: 'cosyvoice', voice: '', speed: 1.0 },
 }

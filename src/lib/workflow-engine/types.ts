@@ -27,11 +27,14 @@ export interface PortDefinition {
 export interface ConfigFieldDefinition {
   key: string
   label: string
-  type: 'text' | 'textarea' | 'select' | 'number' | 'model-picker' | 'voice-picker' | 'toggle'
+  type: 'text' | 'textarea' | 'select' | 'number' | 'slider' | 'model-picker' | 'voice-picker' | 'toggle'
   placeholder?: string
   defaultValue?: string | number | boolean
   options?: { label: string; value: string }[]
   required?: boolean
+  min?: number
+  max?: number
+  step?: number
 }
 
 // ── Node type definition (registry entry) ──

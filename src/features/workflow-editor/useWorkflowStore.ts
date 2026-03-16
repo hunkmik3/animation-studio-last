@@ -1,6 +1,7 @@
 // =============================================
 // Workflow Editor — Zustand Store
 // Manages the full state of the node-based editor
+// Phase 2: Output Persistence + Resume support
 // =============================================
 'use client'
 
@@ -17,6 +18,44 @@ import {
 } from '@xyflow/react'
 import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import type { ExecutionStatus, NodeExecutionState } from '@/lib/workflow-engine/types'
+import { persistNodeOutput, updateExecutionStatus } from './api'
+
+// ── Topological sort for workflow execution order ──
+function topologicalSort(nodes: Node[], edges: Edge[]): string[] {
+    const execNodes = nodes.filter(n => n.type !== 'workflowGroup' && !n.hidden)
+    const nodeIds = new Set(execNodes.map(n => n.id))
+    const adj: Record<string, string[]> = {}
+    const inDegree: Record<string, number> = {}
+    for (const node of execNodes) { adj[node.id] = []; inDegree[node.id] = 0 }
+    for (const edge of edges) {
+        if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+            adj[edge.source].push(edge.target)
+            inDegree[edge.target]++
+        }
+    }
+    const queue = execNodes.filter(n => inDegree[n.id] === 0).map(n => n.id)
+    const result: string[] = []
+    while (queue.length > 0) {
+        const curr = queue.shift()!
+        result.push(curr)
+        for (const next of (adj[curr] || [])) { inDegree[next]--; if (inDegree[next] === 0) queue.push(next) }
+    }
+    const visited = new Set(result)
+    for (const node of execNodes) { if (!visited.has(node.id)) result.push(node.id) }
+    return result
+}
+
+/** Stable snapshot of a node's config for staleness detection */
+function configSnapshot(config: Record<string, unknown>): string {
+    try { return JSON.stringify(config, Object.keys(config).sort()) }
+    catch { return '' }
+}
+
+interface PersistedNodeOutput {
+    outputs: Record<string, unknown>
+    configSnapshot: string | null
+    completedAt: string
+}
 
 interface WorkflowMeta {
     id: string | null
@@ -51,10 +90,24 @@ interface WorkflowStore {
     // ── Execution ──
     executionStatus: ExecutionStatus
     nodeExecutionStates: Record<string, NodeExecutionState>
+    nodeOutputs: Record<string, Record<string, unknown>>
     setExecutionStatus: (status: ExecutionStatus) => void
     setNodeExecutionState: (nodeId: string, state: NodeExecutionState) => void
+    setNodeOutput: (nodeId: string, outputs: Record<string, unknown>) => void
     resetExecution: () => void
     executeSingleNode: (nodeId: string) => Promise<void>
+    executeWorkflow: () => Promise<void>
+
+    // ── Persistence (Phase 2) ──
+    currentExecutionId: string | null
+    persistedOutputs: Record<string, PersistedNodeOutput> | null
+    hydrateFromExecution: (data: {
+        executionId: string | null
+        outputData: Record<string, PersistedNodeOutput> | null
+        nodeStates: Record<string, NodeExecutionState> | null
+    }) => void
+    forceRerunNode: (nodeId: string) => Promise<void>
+    forceRerunAll: () => Promise<void>
 
     // ── Serialization ──
     toJSON: () => { nodes: Node[]; edges: Edge[] }
@@ -205,6 +258,14 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         }))
     },
 
+    updateNodeData: (id, data) => {
+        set((s) => ({
+            nodes: s.nodes.map((n) =>
+                n.id === id ? { ...n, data: { ...n.data, ...data } } : n,
+            ),
+        }))
+    },
+
     // ── Selection ──
     selectedNodeId: null,
     selectNode: (id) => set({ selectedNodeId: id }),
@@ -212,10 +273,51 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     // ── Execution ──
     executionStatus: 'idle',
     nodeExecutionStates: {},
+    nodeOutputs: {},
     setExecutionStatus: (status) => set({ executionStatus: status }),
     setNodeExecutionState: (nodeId, state) =>
         set((s) => ({ nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: state } })),
-    resetExecution: () => set({ executionStatus: 'idle', nodeExecutionStates: {} }),
+    setNodeOutput: (nodeId, outputs) =>
+        set((s) => ({ nodeOutputs: { ...s.nodeOutputs, [nodeId]: outputs } })),
+    resetExecution: () => set({ executionStatus: 'idle', nodeExecutionStates: {}, nodeOutputs: {}, currentExecutionId: null }),
+
+    // ── Persistence (Phase 2) ──
+    currentExecutionId: null,
+    persistedOutputs: null,
+
+    hydrateFromExecution: (data) => {
+        if (!data.outputData) return
+        const hydrated: Record<string, Record<string, unknown>> = {}
+        const hydratedStates: Record<string, NodeExecutionState> = {}
+
+        for (const [nodeId, entry] of Object.entries(data.outputData)) {
+            if (entry.outputs && Object.keys(entry.outputs).length > 0) {
+                hydrated[nodeId] = entry.outputs
+                hydratedStates[nodeId] = {
+                    status: 'completed',
+                    progress: 100,
+                    message: 'Restored from previous run',
+                    completedAt: entry.completedAt,
+                    outputs: entry.outputs,
+                }
+            }
+        }
+
+        // Merge with initialOutput-based preloads (initialOutput takes lower priority)
+        const currentOutputs = get().nodeOutputs
+        const mergedOutputs = { ...currentOutputs }
+        for (const [nodeId, outputs] of Object.entries(hydrated)) {
+            mergedOutputs[nodeId] = { ...(currentOutputs[nodeId] || {}), ...outputs }
+        }
+
+        set({
+            currentExecutionId: data.executionId,
+            persistedOutputs: data.outputData,
+            nodeOutputs: mergedOutputs,
+            nodeExecutionStates: { ...get().nodeExecutionStates, ...hydratedStates },
+        })
+    },
+
     executeSingleNode: async (nodeId: string) => {
         const node = get().nodes.find(n => n.id === nodeId)
         if (!node) return
@@ -223,6 +325,19 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         const data = node.data as any
         const nodeType = data?.nodeType
         const config = data?.config || {}
+
+        // ── Collect inputs from connected upstream nodes ──
+        const inputs: Record<string, unknown> = {}
+        const incomingEdges = get().edges.filter(e => e.target === nodeId)
+        const currentOutputs = get().nodeOutputs
+        for (const edge of incomingEdges) {
+            const sourceOutputs = currentOutputs[edge.source]
+            if (sourceOutputs && edge.sourceHandle) {
+                const targetKey = (edge.targetHandle as string) || (edge.sourceHandle as string)
+                const value = sourceOutputs[edge.sourceHandle as string]
+                if (value !== undefined) inputs[targetKey] = value
+            }
+        }
 
         // Mark running
         set((s) => ({
@@ -257,6 +372,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                     nodeId,
                     projectId,
                     config,
+                    inputs,
                     panelId,
                 }),
             })
@@ -274,20 +390,39 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                 }
             }))
 
-            // If the API returned outputs directly (text-input, mock results)
-            if (result.outputs) {
-                set((s) => ({
-                    nodeExecutionStates: {
-                        ...s.nodeExecutionStates,
-                        [nodeId]: {
-                            status: 'completed',
-                            progress: 100,
-                            message: 'Done',
-                            completedAt: new Date().toISOString(),
-                            outputs: result.outputs
-                        }
+            // Helper: persist outputs to DB (fire-and-forget)
+            const workflowId = get().meta?.id
+            const doPersist = (outputs: Record<string, unknown>, nodeState: NodeExecutionState) => {
+                if (!workflowId) return
+                persistNodeOutput(workflowId, {
+                    executionId: get().currentExecutionId || undefined,
+                    nodeId,
+                    outputs,
+                    configSnapshot: configSnapshot(config),
+                    nodeState,
+                }).then(resp => {
+                    if (resp?.executionId && !get().currentExecutionId) {
+                        set({ currentExecutionId: resp.executionId })
                     }
+                }).catch(() => { /* persistence failure is non-blocking */ })
+            }
+
+            // If the API returned outputs directly — store them for downstream nodes
+            // Merge with initialOutput so typed data (characters/scenes) is preserved
+            if (result.outputs) {
+                const mergedOutputs = { ...(data?.initialOutput || {}), ...result.outputs }
+                const nodeState: NodeExecutionState = {
+                    status: 'completed',
+                    progress: 100,
+                    message: 'Done',
+                    completedAt: new Date().toISOString(),
+                    outputs: mergedOutputs
+                }
+                set((s) => ({
+                    nodeOutputs: { ...s.nodeOutputs, [nodeId]: mergedOutputs },
+                    nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
                 }))
+                doPersist(mergedOutputs, nodeState)
                 return
             }
 
@@ -297,17 +432,16 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                 // For now, simulate a brief wait then mark completed
                 await new Promise((r) => setTimeout(r, 1500))
 
+                const nodeState: NodeExecutionState = {
+                    status: 'completed',
+                    progress: 100,
+                    message: `Task submitted: ${result.taskId.slice(0, 8)}...`,
+                    completedAt: new Date().toISOString(),
+                }
                 set((s) => ({
-                    nodeExecutionStates: {
-                        ...s.nodeExecutionStates,
-                        [nodeId]: {
-                            status: 'completed',
-                            progress: 100,
-                            message: `Task submitted: ${result.taskId.slice(0, 8)}...`,
-                            completedAt: new Date().toISOString(),
-                        }
-                    }
+                    nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
                 }))
+                doPersist({ _taskId: result.taskId, _async: true }, nodeState)
                 return
             }
 
@@ -325,18 +459,18 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                 }
             }
 
+            const nodeState: NodeExecutionState = {
+                status: 'completed',
+                progress: 100,
+                message: result.message || 'Done (mock)',
+                completedAt: new Date().toISOString(),
+                outputs: generatedOutputs
+            }
             set((s) => ({
-                nodeExecutionStates: {
-                    ...s.nodeExecutionStates,
-                    [nodeId]: {
-                        status: 'completed',
-                        progress: 100,
-                        message: result.message || 'Done (mock)',
-                        completedAt: new Date().toISOString(),
-                        outputs: generatedOutputs
-                    }
-                }
+                nodeOutputs: { ...s.nodeOutputs, [nodeId]: generatedOutputs },
+                nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
             }))
+            doPersist(generatedOutputs, nodeState)
         } catch (err) {
             const errMsg = err instanceof Error ? err.message : 'Unknown error'
             set((s) => ({
@@ -353,6 +487,105 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         }
     },
 
+    // ── Execute full workflow in topological order (with resume) ──
+    executeWorkflow: async () => {
+        const { nodes, edges, persistedOutputs } = get()
+        const execOrder = topologicalSort(nodes, edges)
+
+        // Track which nodes were freshly executed (not skipped) — used to invalidate downstream
+        const freshlyExecuted = new Set<string>()
+
+        // Don't wipe outputs — preserve persisted ones for resume
+        set({ executionStatus: 'running' })
+
+        // Mark all as pending initially
+        const pendingStates: Record<string, NodeExecutionState> = {}
+        for (const nodeId of execOrder) {
+            pendingStates[nodeId] = { status: 'pending', progress: 0 }
+        }
+        set({ nodeExecutionStates: pendingStates })
+
+        // Execute each node in topological order
+        for (const nodeId of execOrder) {
+            if (get().executionStatus !== 'running') break
+
+            const node = nodes.find(n => n.id === nodeId)
+            const nodeData = node?.data as any
+            const config = nodeData?.config || {}
+
+            // ── Resume logic: check if node can be skipped ──
+            const persisted = persistedOutputs?.[nodeId]
+            if (persisted && persisted.outputs && Object.keys(persisted.outputs).length > 0) {
+                // Check config staleness
+                const currentSnap = configSnapshot(config)
+                const isConfigFresh = persisted.configSnapshot === currentSnap
+
+                // Check if all upstream nodes were skipped (not freshly executed)
+                const upstreamEdges = edges.filter(e => e.target === nodeId)
+                const allUpstreamSkipped = upstreamEdges.every(e => !freshlyExecuted.has(e.source))
+
+                if (isConfigFresh && allUpstreamSkipped) {
+                    // Skip — reuse persisted output
+                    set((s) => ({
+                        nodeOutputs: { ...s.nodeOutputs, [nodeId]: persisted.outputs },
+                        nodeExecutionStates: {
+                            ...s.nodeExecutionStates,
+                            [nodeId]: {
+                                status: 'skipped',
+                                progress: 100,
+                                message: 'Reused from previous run',
+                                completedAt: persisted.completedAt,
+                                outputs: persisted.outputs,
+                            }
+                        }
+                    }))
+                    continue
+                }
+            }
+
+            // ── Execute node ──
+            freshlyExecuted.add(nodeId)
+            await get().executeSingleNode(nodeId)
+            const state = get().nodeExecutionStates[nodeId]
+            if (state?.status === 'failed') {
+                set({ executionStatus: 'failed' })
+                // Update execution status in DB
+                const workflowId = get().meta?.id
+                const execId = get().currentExecutionId
+                if (workflowId && execId) {
+                    updateExecutionStatus(workflowId, execId, 'failed').catch(() => {})
+                }
+                return
+            }
+        }
+
+        set({ executionStatus: 'completed' })
+
+        // Update execution status in DB
+        const workflowId = get().meta?.id
+        const execId = get().currentExecutionId
+        if (workflowId && execId) {
+            updateExecutionStatus(workflowId, execId, 'completed').catch(() => {})
+        }
+    },
+
+    // ── Force re-run a single node (clear persisted output first) ──
+    forceRerunNode: async (nodeId: string) => {
+        // Clear this node's persisted output from local state
+        set((s) => {
+            const updated = { ...s.persistedOutputs }
+            delete updated[nodeId]
+            return { persistedOutputs: updated }
+        })
+        await get().executeSingleNode(nodeId)
+    },
+
+    // ── Force re-run entire workflow (clear all persisted outputs) ──
+    forceRerunAll: async () => {
+        set({ persistedOutputs: null, nodeOutputs: {}, nodeExecutionStates: {}, currentExecutionId: null })
+        await get().executeWorkflow()
+    },
+
     // ── Serialization ──
     toJSON: () => {
         const { nodes, edges } = get()
@@ -360,12 +593,20 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     },
 
     loadFromJSON: (data) => {
-        set({ nodes: data.nodes, edges: data.edges })
+        // Pre-populate nodeOutputs from nodes that have initialOutput (e.g., Characters/Locations from workspace)
+        const preloadedOutputs: Record<string, Record<string, unknown>> = {}
+        for (const node of data.nodes) {
+            const nd = node.data as any
+            if (nd?.initialOutput && typeof nd.initialOutput === 'object') {
+                preloadedOutputs[node.id] = nd.initialOutput
+            }
+        }
+        set({ nodes: data.nodes, edges: data.edges, nodeOutputs: preloadedOutputs })
         set((s) => ({ meta: { ...s.meta, isSaved: true } }))
     },
 
     clear: () => {
-        set({ nodes: [], edges: [], selectedNodeId: null })
+        set({ nodes: [], edges: [], selectedNodeId: null, currentExecutionId: null, persistedOutputs: null })
         set((s) => ({ meta: { ...s.meta, isSaved: false } }))
     },
 }))

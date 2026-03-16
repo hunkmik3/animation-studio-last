@@ -120,6 +120,44 @@ export async function pushWorkflowToProject(projectId: string, nodes: any[]): Pr
 
     return res.json()
 }
+// ── Persist node output to execution (called after each node completes) ──
+export async function persistNodeOutput(workflowId: string, data: {
+    executionId?: string
+    nodeId: string
+    outputs: Record<string, unknown>
+    configSnapshot?: string
+    nodeState?: NodeExecutionState
+    status?: string
+}) {
+    const res = await fetch(`/api/workflows/${workflowId}/executions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+        console.error('Failed to persist node output')
+        return null
+    }
+    return res.json() as Promise<{ executionId: string; saved: boolean }>
+}
+
+// ── Load latest execution outputs (for hydration on page load) ──
+export async function fetchExecutionOutputs(workflowId: string) {
+    const res = await fetch(`/api/workflows/${workflowId}/executions`)
+    if (!res.ok) return null
+    return res.json() as Promise<{
+        executionId: string | null
+        status: string | null
+        outputData: Record<string, { outputs: Record<string, unknown>; configSnapshot: string | null; completedAt: string }> | null
+        nodeStates: Record<string, NodeExecutionState> | null
+    }>
+}
+
+// ── Update execution status (workflow-level: completed/failed) ──
+export async function updateExecutionStatus(workflowId: string, executionId: string, status: string) {
+    return persistNodeOutput(workflowId, { executionId, nodeId: '', status } as any)
+}
+
 // ── Fetch single panel data (for preview updates) ──
 export async function fetchPanel(projectId: string, panelId: string): Promise<{ panel: any }> {
     const res = await fetch(`/api/novel-promotion/${projectId}/panels/${panelId}`)

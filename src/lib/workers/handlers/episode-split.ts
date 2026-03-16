@@ -217,14 +217,9 @@ export async function handleEpisodeSplitTask(job: Job<TaskJobData>) {
             throw new Error(`episode_${idx + 1} endMarker 无法定位`)
           }
 
-          const rawStartIndex = toValidBoundaryIndex(ep.startIndex, content.length)
-          if (rawStartIndex !== null && Math.abs(rawStartIndex - startMatch.startIndex) > 500) {
-            throw new Error(`episode_${idx + 1} startIndex 与 marker 偏差过大`)
-          }
-          const rawEndIndex = toValidBoundaryIndex(ep.endIndex, content.length)
-          if (rawEndIndex !== null && Math.abs(rawEndIndex - endMatch.endIndex) > 500) {
-            throw new Error(`episode_${idx + 1} endIndex 与 marker 偏差过大`)
-          }
+          // Index hints from LLM are optional cross-checks only.
+          // Markers are already located above — skip strict index validation
+          // to avoid false positives when LLM miscounts character positions.
 
           const startPos = startMatch.startIndex
           const endPos = endMatch.endIndex

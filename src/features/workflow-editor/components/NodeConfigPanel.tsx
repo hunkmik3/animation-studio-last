@@ -16,7 +16,7 @@ import { useWorkflowStore } from '../useWorkflowStore'
 import {
     X, Settings2, Video, ImageIcon, Play, ChevronDown, ChevronRight,
     Eye, Pencil, Loader2, CheckCircle2, FileText, Mic, Film,
-    ZoomIn, LayoutGrid, Users, MapPin, Bot
+    ZoomIn, LayoutGrid, Users, MapPin, Bot, Wand2, RefreshCw
 } from 'lucide-react'
 
 // ── URL helper ──
@@ -48,6 +48,178 @@ function SectionHeader({ title, icon: Icon, defaultOpen = true, children }: {
             </button>
             {open && <div className="px-4 pb-4">{children}</div>}
         </div>
+    )
+}
+
+// ── Generative Asset Gallery (Characters / Locations with inline generate) ──
+function GenerativeAssetGallery({
+    items,
+    type,
+    projectId,
+    title,
+    nodeId,
+    updateNodeData: updateData,
+}: {
+    items: { id: string; name: string; imageUrl?: string; appearanceId?: string }[]
+    type: 'character' | 'location'
+    projectId: string | null
+    title: string
+    nodeId: string | null
+    updateNodeData: (id: string, data: Record<string, unknown>) => void
+}) {
+    const [itemStates, setItemStates] = useState<Record<string, 'idle' | 'submitting' | 'generating' | 'done' | 'error'>>({})
+    const [itemImages, setItemImages] = useState<Record<string, string>>(() => {
+        const init: Record<string, string> = {}
+        items.forEach(i => { if (i.imageUrl) init[i.id] = i.imageUrl })
+        return init
+    })
+    const [errors, setErrors] = useState<Record<string, string>>({})
+
+    if (!items || items.length === 0) return null
+
+    const pollForImage = async (itemId: string) => {
+        if (!projectId || !nodeId) return
+        for (let attempt = 0; attempt < 6; attempt++) {
+            await new Promise(r => setTimeout(r, 7000))
+            try {
+                const res = await fetch(`/api/workflows/sync-project?projectId=${projectId}`)
+                if (!res.ok) continue
+                const data = await res.json()
+                const nodes = data?.graphData?.nodes || []
+                const targetNode = nodes.find((n: any) =>
+                    type === 'character' ? n.data?.isCharacterSummary : n.data?.isLocationSummary
+                )
+                if (!targetNode) continue
+                const freshList: { id: string; imageUrl?: string }[] =
+                    type === 'character'
+                        ? (targetNode.data?.initialOutput?.characters || [])
+                        : (targetNode.data?.initialOutput?.scenes || [])
+                const freshItem = freshList.find(i => i.id === itemId)
+                if (freshItem?.imageUrl) {
+                    setItemImages(prev => ({ ...prev, [itemId]: freshItem.imageUrl! }))
+                    setItemStates(prev => ({ ...prev, [itemId]: 'done' }))
+                    // Sync updated images back into node data
+                    const allImages = freshList
+                        .filter(i => i.imageUrl)
+                        .map(i => ({ name: items.find(x => x.id === i.id)?.name || '', imageUrl: i.imageUrl! }))
+                    const dataKey = type === 'character' ? 'characterImages' : 'locationImages'
+                    updateData(nodeId, { [dataKey]: allImages })
+                    return
+                }
+            } catch { /**/ }
+        }
+        // Polling timed out — reset so user can retry
+        setItemStates(prev => ({ ...prev, [itemId]: 'idle' }))
+    }
+
+    const generateOne = async (itemId: string) => {
+        if (!projectId) return
+        setItemStates(prev => ({ ...prev, [itemId]: 'submitting' }))
+        setErrors(prev => { const next = { ...prev }; delete next[itemId]; return next })
+        try {
+            const url = `/api/novel-promotion/${projectId}/generate-image`
+            const item = items.find(i => i.id === itemId)
+            const body = type === 'character'
+                ? { type: 'character', id: itemId, appearanceId: item?.appearanceId || itemId }
+                : { type: 'location', id: itemId, imageIndex: 0 }
+
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            })
+            const result = await res.json()
+            if (!res.ok) {
+                console.error('[GenerateImage] API error:', result)
+                throw new Error(result.message || result.error?.message || result.error || 'Generation failed')
+            }
+            setItemStates(prev => ({ ...prev, [itemId]: 'generating' }))
+            pollForImage(itemId)
+        } catch (err) {
+            setItemStates(prev => ({ ...prev, [itemId]: 'error' }))
+            setErrors(prev => ({ ...prev, [itemId]: err instanceof Error ? err.message : String(err) }))
+        }
+    }
+
+    const missingCount = items.filter(i => !itemImages[i.id]).length
+
+    return (
+        <SectionHeader title={title} icon={Eye} defaultOpen={true}>
+            {/* Generate All Missing button */}
+            {projectId && missingCount > 0 && (
+                <div className="flex justify-end mb-2">
+                    <button
+                        onClick={() => items.filter(i => !itemImages[i.id]).forEach(i => generateOne(i.id))}
+                        className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium rounded-lg bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 transition-colors"
+                    >
+                        <Wand2 className="w-3 h-3" />
+                        Generate All ({missingCount})
+                    </button>
+                </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+                {items.map((item) => {
+                    const imageUrl = itemImages[item.id]
+                    const state = itemStates[item.id] || 'idle'
+                    const isGenerating = state === 'submitting' || state === 'generating'
+                    const hasError = state === 'error'
+
+                    return (
+                        <div key={item.id} className="relative group rounded-lg overflow-hidden bg-slate-900 border border-slate-700">
+                            {imageUrl ? (
+                                <img src={imageUrl} alt={item.name} className="w-full h-28 object-cover" />
+                            ) : (
+                                <div className="w-full h-28 flex flex-col items-center justify-center bg-slate-800/60 gap-1.5">
+                                    {isGenerating ? (
+                                        <>
+                                            <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
+                                            <span className="text-[9px] text-slate-400">
+                                                {state === 'submitting' ? 'Submitting...' : 'Generating...'}
+                                            </span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <ImageIcon className="w-6 h-6 text-slate-700" />
+                                            <span className="text-[9px] text-slate-600">No image</span>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                            {/* Name label */}
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1">
+                                <span className="text-[10px] text-white font-medium truncate block">{item.name}</span>
+                            </div>
+                            {/* Generate / Regenerate button (shown on hover) */}
+                            {!isGenerating && projectId && (
+                                <button
+                                    onClick={() => generateOne(item.id)}
+                                    title={imageUrl ? 'Regenerate' : 'Generate image'}
+                                    className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/50 hover:bg-violet-600/80 text-white opacity-0 group-hover:opacity-100 transition-all"
+                                >
+                                    {imageUrl ? <RefreshCw className="w-3 h-3" /> : <Wand2 className="w-3 h-3" />}
+                                </button>
+                            )}
+                            {/* Error badge */}
+                            {hasError && (
+                                <div className="absolute top-1.5 left-1.5 max-w-[90%]" title={errors[item.id]}>
+                                    <span className="text-[9px] bg-red-500/80 text-white px-1.5 py-0.5 rounded truncate block">
+                                        ❌ {errors[item.id]?.slice(0, 40) || 'Error'}
+                                    </span>
+                                </div>
+                            )}
+                            {/* Done badge */}
+                            {state === 'done' && (
+                                <div className="absolute top-1.5 left-1.5">
+                                    <span className="text-[9px] bg-emerald-500/80 text-white px-1.5 py-0.5 rounded flex items-center gap-1">
+                                        <CheckCircle2 className="w-2.5 h-2.5" /> Done
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
+        </SectionHeader>
     )
 }
 
@@ -125,11 +297,13 @@ function VideoPreviewSection({ outputs, initialOutput }: { outputs?: Record<stri
 }
 
 // ── Text Output Section ──
-function TextOutputSection({ outputs }: { outputs?: Record<string, unknown> }) {
-    if (!outputs) return null
+function TextOutputSection({ outputs, initialOutput }: { outputs?: Record<string, unknown>; initialOutput?: Record<string, unknown> }) {
+    // Prefer live execution outputs; fall back to initialOutput (pre-loaded data like characters/scenes)
+    const display = outputs || initialOutput
+    if (!display) return null
 
-    const textKeys = Object.entries(outputs).filter(([, v]) => typeof v === 'string' && !String(v).startsWith('['))
-    const jsonKeys = Object.entries(outputs).filter(([, v]) => typeof v === 'object' && v !== null)
+    const textKeys = Object.entries(display).filter(([, v]) => typeof v === 'string' && !String(v).startsWith('['))
+    const jsonKeys = Object.entries(display).filter(([, v]) => typeof v === 'object' && v !== null)
 
     if (textKeys.length === 0 && jsonKeys.length === 0) return null
 
@@ -256,10 +430,31 @@ function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
                                     type="number"
                                     value={Number(value)}
                                     onChange={(e) => onConfigChange(field.key, parseFloat(e.target.value) || 0)}
-                                    step={field.key === 'temperature' || field.key === 'speed' ? 0.1 : 1}
-                                    min={0}
+                                    step={field.step ?? 1}
+                                    min={field.min ?? 0}
                                     className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
                                 />
+                            )}
+
+                            {field.type === 'slider' && (
+                                <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-[10px] text-slate-600">{field.min ?? 0}</span>
+                                        <span className="text-xs font-mono font-semibold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded">
+                                            {Number(value).toFixed((field.step ?? 1) < 1 ? 1 : 0)}
+                                        </span>
+                                        <span className="text-[10px] text-slate-600">{field.max ?? 1}</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        value={Number(value)}
+                                        onChange={(e) => onConfigChange(field.key, parseFloat(e.target.value))}
+                                        min={field.min ?? 0}
+                                        max={field.max ?? 1}
+                                        step={field.step ?? 0.1}
+                                        className="w-full h-1.5 accent-blue-500 cursor-pointer"
+                                    />
+                                </div>
                             )}
 
                             {field.type === 'select' && (
@@ -322,7 +517,9 @@ export function NodeConfigPanel() {
     const executionState = useWorkflowStore((s) => selectedNodeId ? s.nodeExecutionStates[selectedNodeId] : undefined)
     const selectNode = useWorkflowStore((s) => s.selectNode)
     const updateNodeConfig = useWorkflowStore((s) => s.updateNodeConfig)
+    const updateNodeData = useWorkflowStore((s) => s.updateNodeData)
     const executeSingleNode = useWorkflowStore((s) => s.executeSingleNode)
+    const projectId = useWorkflowStore((s) => s.meta.projectId)
 
     const selectedNode = nodes.find((n) => n.id === selectedNodeId)
     const nodeData = selectedNode?.data as { nodeType: string; config: Record<string, unknown>; label?: string; initialOutput?: Record<string, unknown> } | undefined
@@ -360,6 +557,12 @@ export function NodeConfigPanel() {
 
     const NodeIcon = NODE_ICON_MAP[nodeData.nodeType] || Settings2
     const nodeLabel = nodeData.label || def.title
+    const nd = nodeData as any
+    // Full items with IDs (for generate buttons)
+    const characterItems: { id: string; name: string; imageUrl?: string }[] =
+        nd.initialOutput?.characters || []
+    const locationItems: { id: string; name: string; imageUrl?: string }[] =
+        nd.initialOutput?.scenes || []
 
     return (
         <div
@@ -399,6 +602,29 @@ export function NodeConfigPanel() {
 
             {/* ── Scrollable content ── */}
             <div className="flex-1 overflow-y-auto">
+                {/* Character gallery with inline generate */}
+                {nd.isCharacterSummary && characterItems.length > 0 && (
+                    <GenerativeAssetGallery
+                        items={characterItems}
+                        type="character"
+                        projectId={projectId}
+                        title="Character Models"
+                        nodeId={selectedNodeId}
+                        updateNodeData={updateNodeData}
+                    />
+                )}
+                {/* Location gallery with inline generate */}
+                {nd.isLocationSummary && locationItems.length > 0 && (
+                    <GenerativeAssetGallery
+                        items={locationItems}
+                        type="location"
+                        projectId={projectId}
+                        title="Location Images"
+                        nodeId={selectedNodeId}
+                        updateNodeData={updateNodeData}
+                    />
+                )}
+
                 {/* Preview sections — show first for visual impact */}
                 <ImagePreviewSection
                     outputs={executionState?.outputs}
@@ -410,6 +636,7 @@ export function NodeConfigPanel() {
                 />
                 <TextOutputSection
                     outputs={executionState?.outputs}
+                    initialOutput={nodeData.initialOutput}
                 />
 
                 {/* Text Input — show content preview for text-input nodes */}

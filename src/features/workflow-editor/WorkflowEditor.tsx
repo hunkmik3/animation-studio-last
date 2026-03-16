@@ -25,7 +25,7 @@ import { NodePalette } from './components/NodePalette'
 import { NodeConfigPanel } from './components/NodeConfigPanel'
 import { WorkflowToolbar } from './components/WorkflowToolbar'
 import { WorkflowList } from './components/WorkflowList'
-import { fetchWorkflow } from './api'
+import { fetchWorkflow, fetchExecutionOutputs } from './api'
 import { useTaskTargetStateMap } from '@/lib/query/hooks/useTaskTargetStateMap'
 
 // Register custom node types
@@ -136,6 +136,7 @@ function WorkflowEditorInner() {
     const selectedNodeId = useWorkflowStore((s) => s.selectedNodeId)
     const loadFromJSON = useWorkflowStore((s) => s.loadFromJSON)
     const setMeta = useWorkflowStore((s) => s.setMeta)
+    const hydrateFromExecution = useWorkflowStore((s) => s.hydrateFromExecution)
 
     const reactFlowWrapper = useRef<HTMLDivElement>(null)
     const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
@@ -148,13 +149,13 @@ function WorkflowEditorInner() {
         }
     }, [projectIdFromUrl, setMeta])
 
-    // Load workflow from DB if ID in URL
+    // Load workflow from DB if ID in URL, then hydrate persisted outputs
     useEffect(() => {
         if (!workflowId || loadedRef.current === workflowId) return
         loadedRef.current = workflowId
 
         fetchWorkflow(workflowId)
-            .then(({ workflow }) => {
+            .then(async ({ workflow }) => {
                 const graphData = JSON.parse(workflow.graphData)
                 loadFromJSON(graphData)
                 setMeta({
@@ -163,11 +164,17 @@ function WorkflowEditorInner() {
                     description: workflow.description || '',
                     isSaved: true,
                 })
+
+                // Hydrate persisted outputs from latest execution
+                const execData = await fetchExecutionOutputs(workflowId)
+                if (execData?.outputData) {
+                    hydrateFromExecution(execData)
+                }
             })
             .catch((err) => {
                 console.error('Failed to load workflow:', err)
             })
-    }, [workflowId, loadFromJSON, setMeta])
+    }, [workflowId, loadFromJSON, setMeta, hydrateFromExecution])
 
     const onInit = useCallback((instance: ReactFlowInstance) => {
         reactFlowInstance.current = instance

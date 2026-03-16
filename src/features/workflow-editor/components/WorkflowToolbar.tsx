@@ -11,13 +11,12 @@ import { useSearchParams } from 'next/navigation'
 import {
     createWorkflow,
     updateWorkflow,
-    executeWorkflow as executeWorkflowAPI,
     pushWorkflowToProject,
 } from '../api'
 import {
     Save, Play, Trash2, Download, Upload,
     Zap, LayoutTemplate, Workflow,
-    CheckCircle2, AlertCircle, UploadCloud
+    CheckCircle2, AlertCircle, UploadCloud, RotateCcw
 } from 'lucide-react'
 
 // Pre-built classic pipeline template
@@ -52,10 +51,11 @@ export function WorkflowToolbar() {
     const loadFromJSON = useWorkflowStore((s) => s.loadFromJSON)
     const toJSON = useWorkflowStore((s) => s.toJSON)
     const executionStatus = useWorkflowStore((s) => s.executionStatus)
-    const setExecutionStatus = useWorkflowStore((s) => s.setExecutionStatus)
     const resetExecution = useWorkflowStore((s) => s.resetExecution)
+    const executeWorkflow = useWorkflowStore((s) => s.executeWorkflow)
+    const forceRerunAll = useWorkflowStore((s) => s.forceRerunAll)
+    const persistedOutputs = useWorkflowStore((s) => s.persistedOutputs)
     const nodes = useWorkflowStore((s) => s.nodes)
-    const setNodeExecutionState = useWorkflowStore((s) => s.setNodeExecutionState)
     const [showTemplates, setShowTemplates] = useState(false)
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -135,51 +135,35 @@ export function WorkflowToolbar() {
         input.click()
     }, [loadFromJSON, setMeta, showToast])
 
-    // ── Execute via API ──
+    // ── Execute workflow with real data flow (resume: skips cached nodes) ──
     const handleRun = useCallback(async () => {
         if (nodes.length === 0) return
-        resetExecution()
-        setExecutionStatus('running')
-
-        // Mark all nodes as pending
-        for (const node of nodes) {
-            setNodeExecutionState(node.id, { status: 'pending', progress: 0 })
+        try {
+            await executeWorkflow()
+            const finalStatus = useWorkflowStore.getState().executionStatus
+            showToast(
+                finalStatus === 'completed' ? '✅ Workflow completed!' : '⚠️ Some nodes failed — check node details',
+                finalStatus === 'completed' ? 'success' : 'error',
+            )
+        } catch {
+            showToast('Workflow execution failed', 'error')
         }
+    }, [nodes, executeWorkflow, showToast])
 
-        // If saved to DB, execute via API
-        if (meta.id) {
-            try {
-                const result = await executeWorkflowAPI(meta.id)
-                // Apply result states
-                for (const [nodeId, state] of Object.entries(result.execution.nodeStates)) {
-                    setNodeExecutionState(nodeId, state)
-                }
-                setExecutionStatus(result.execution.status as 'completed' | 'failed')
-                showToast(
-                    result.execution.status === 'completed'
-                        ? '✅ Workflow executed successfully!'
-                        : '⚠️ Workflow completed with errors',
-                    result.execution.status === 'completed' ? 'success' : 'error',
-                )
-            } catch {
-                setExecutionStatus('failed')
-                showToast('Execution failed', 'error')
-            }
-        } else {
-            // Not saved — run local simulation
-            for (const node of nodes) {
-                setNodeExecutionState(node.id, { status: 'running', progress: 0, message: 'Processing...' })
-                await new Promise((r) => setTimeout(r, 200))
-                for (let p = 0; p <= 100; p += 25) {
-                    setNodeExecutionState(node.id, { status: 'running', progress: p, message: `Step ${p}%...` })
-                    await new Promise((r) => setTimeout(r, 100))
-                }
-                setNodeExecutionState(node.id, { status: 'completed', progress: 100, message: 'Done', completedAt: new Date().toISOString() })
-            }
-            setExecutionStatus('completed')
-            showToast('✅ Simulation complete! Save workflow to run with real AI.', 'success')
+    // ── Force re-run all (ignores cache) ──
+    const handleForceRerunAll = useCallback(async () => {
+        if (nodes.length === 0) return
+        try {
+            await forceRerunAll()
+            const finalStatus = useWorkflowStore.getState().executionStatus
+            showToast(
+                finalStatus === 'completed' ? '✅ Full re-run completed!' : '⚠️ Some nodes failed',
+                finalStatus === 'completed' ? 'success' : 'error',
+            )
+        } catch {
+            showToast('Force re-run failed', 'error')
         }
-    }, [nodes, meta.id, resetExecution, setExecutionStatus, setNodeExecutionState, showToast])
+    }, [nodes, forceRerunAll, showToast])
 
     const handleLoadTemplate = useCallback(() => {
         loadFromJSON(CLASSIC_PIPELINE_TEMPLATE)
@@ -362,7 +346,7 @@ export function WorkflowToolbar() {
 
                     <div className="w-px h-6 bg-slate-700 mx-1" />
 
-                    {/* Run */}
+                    {/* Run (with resume) */}
                     <button
                         onClick={handleRun}
                         disabled={executionStatus === 'running' || nodes.length === 0}
@@ -375,10 +359,25 @@ export function WorkflowToolbar() {
                     >
                         {executionStatus === 'running' ? (
                             <><Zap className="w-3.5 h-3.5 animate-pulse" /> Running...</>
+                        ) : persistedOutputs && Object.keys(persistedOutputs).length > 0 ? (
+                            <><Play className="w-3.5 h-3.5" /> Resume</>
                         ) : (
                             <><Play className="w-3.5 h-3.5" /> Run Workflow</>
                         )}
                     </button>
+
+                    {/* Force Rerun All (ignores cache) */}
+                    {persistedOutputs && Object.keys(persistedOutputs).length > 0 && executionStatus !== 'running' && (
+                        <button
+                            onClick={handleForceRerunAll}
+                            disabled={nodes.length === 0}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-amber-600/15 hover:bg-amber-600/30 text-amber-300 transition-colors border border-amber-500/20"
+                            title="Discard cached outputs and re-run all nodes from scratch"
+                        >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            Rerun All
+                        </button>
+                    )}
                 </div>
             </div>
 
