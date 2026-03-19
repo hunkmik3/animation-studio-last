@@ -14,6 +14,8 @@ interface StoryboardHeaderProps {
   isBatchSubmitting: boolean
   onDownloadAllImages: () => void
   onGenerateAllPanels: () => void
+  onExportStoryboard: (format: 'json' | 'csv') => void
+  isExporting: boolean
   onBack: () => void
 }
 
@@ -26,6 +28,8 @@ export default function StoryboardHeader({
   isBatchSubmitting,
   onDownloadAllImages,
   onGenerateAllPanels,
+  onExportStoryboard,
+  isExporting,
   onBack
 }: StoryboardHeaderProps) {
   const t = useTranslations('storyboard')
@@ -81,6 +85,24 @@ export default function StoryboardHeader({
           disabled={totalPanels === 0}
         >
           {isDownloadingImages ? t('header.downloading') : t('header.downloadAll')}
+        </GlassButton>
+
+        <GlassButton
+          variant="secondary"
+          loading={isExporting}
+          onClick={() => onExportStoryboard('json')}
+          disabled={totalPanels === 0}
+        >
+          {isExporting ? 'Exporting...' : 'Export JSON'}
+        </GlassButton>
+
+        <GlassButton
+          variant="secondary"
+          loading={isExporting}
+          onClick={() => onExportStoryboard('csv')}
+          disabled={totalPanels === 0}
+        >
+          {isExporting ? 'Exporting...' : 'Export CSV'}
         </GlassButton>
 
         <GlassButton variant="ghost" onClick={onBack}>{t('header.back')}</GlassButton>

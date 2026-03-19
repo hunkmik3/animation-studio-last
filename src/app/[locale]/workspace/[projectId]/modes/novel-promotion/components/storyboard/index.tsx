@@ -1,5 +1,6 @@
 'use client'
 
+import { useCallback, useState } from 'react'
 import { NovelPromotionStoryboard, NovelPromotionClip } from '@/types/project'
 import { CharacterPickerModal, LocationPickerModal } from '../PanelEditForm'
 import ImageEditModal from './ImageEditModal'
@@ -118,6 +119,31 @@ export default function StoryboardStage({
     handleGenerateAllPanels,
   } = controller
 
+  const [isExporting, setIsExporting] = useState(false)
+
+  const exportStoryboard = useCallback(async (format: 'json' | 'csv') => {
+    setIsExporting(true)
+    try {
+      const url = `/api/novel-promotion/${projectId}/export-storyboard?episodeId=${encodeURIComponent(episodeId)}&format=${format}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error('Export failed')
+
+      const blob = await res.blob()
+      const filename = `storyboard-${projectId.slice(0, 8)}.${format}`
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(a.href)
+    } catch (err) {
+      console.error('Export error:', err)
+    } finally {
+      setIsExporting(false)
+    }
+  }, [projectId, episodeId])
+
   const modalRuntime = useStoryboardModalRuntime({
     projectId,
     videoRatio,
@@ -160,6 +186,8 @@ export default function StoryboardStage({
           addingStoryboardGroupState={addingStoryboardGroupState}
           onDownloadAllImages={downloadAllImages}
           onGenerateAllPanels={handleGenerateAllPanels}
+          onExportStoryboard={exportStoryboard}
+          isExporting={isExporting}
           onAddStoryboardGroupAtStart={() => addStoryboardGroup(0)}
           onBack={onBack}
         />

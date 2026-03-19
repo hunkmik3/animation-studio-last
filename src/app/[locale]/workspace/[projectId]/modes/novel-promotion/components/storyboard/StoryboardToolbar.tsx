@@ -17,6 +17,8 @@ interface StoryboardToolbarProps {
   addingStoryboardGroupState: TaskPresentationState | null
   onDownloadAllImages: () => Promise<void>
   onGenerateAllPanels: () => Promise<void>
+  onExportStoryboard: (format: 'json' | 'csv') => void
+  isExporting: boolean
   onAddStoryboardGroupAtStart: () => void
   onBack: () => void
 }
@@ -32,6 +34,8 @@ export default function StoryboardToolbar({
   addingStoryboardGroupState,
   onDownloadAllImages,
   onGenerateAllPanels,
+  onExportStoryboard,
+  isExporting,
   onAddStoryboardGroupAtStart,
   onBack,
 }: StoryboardToolbarProps) {
@@ -47,6 +51,8 @@ export default function StoryboardToolbar({
         isBatchSubmitting={isBatchSubmitting}
         onDownloadAllImages={onDownloadAllImages}
         onGenerateAllPanels={onGenerateAllPanels}
+        onExportStoryboard={onExportStoryboard}
+        isExporting={isExporting}
         onBack={onBack}
       />
 
