@@ -64,9 +64,6 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
   if (customPrompt) {
     billingPayload.customPrompt = customPrompt
   }
-  // Auto-confirm: workflow generates should immediately update imageUrl
-  // without requiring manual candidate confirmation on workspace
-  billingPayload.autoConfirm = true
 
   const result = await submitTask({
     userId: ctx.userId,
