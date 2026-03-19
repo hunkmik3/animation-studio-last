@@ -83,7 +83,44 @@ export const GET = apiHandler(async (
 
   const { searchParams } = new URL(request.url)
   const episodeId = searchParams.get('episodeId')
+  const lineId = searchParams.get('lineId')
   const speakersOnly = searchParams.get('speakersOnly')
+
+  if (lineId) {
+    const novelProject = await prisma.novelPromotionProject.findUnique({
+      where: { projectId },
+      select: { id: true }
+    })
+    if (!novelProject) {
+      throw new ApiError('NOT_FOUND')
+    }
+
+    const voiceLine = await prisma.novelPromotionVoiceLine.findFirst({
+      where: {
+        id: lineId,
+        episode: {
+          novelPromotionProjectId: novelProject.id
+        }
+      },
+      include: {
+        matchedPanel: {
+          select: {
+            id: true,
+            storyboardId: true,
+            panelIndex: true
+          }
+        }
+      }
+    })
+
+    if (!voiceLine) {
+      throw new ApiError('NOT_FOUND')
+    }
+
+    return NextResponse.json({
+      voiceLine: await withVoiceLineMedia(voiceLine)
+    })
+  }
 
   if (speakersOnly === '1') {
     const novelProject = await prisma.novelPromotionProject.findUnique({

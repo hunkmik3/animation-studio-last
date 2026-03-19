@@ -4,6 +4,7 @@ import { apiHandler, ApiError, getRequestId } from '@/lib/api-errors'
 import { resolveRequiredTaskLocale } from '@/lib/task/resolve-locale'
 import { getProjectModelConfig } from '@/lib/config-service'
 import { NODE_EXECUTOR_REGISTRY } from '@/lib/workflow-engine/executors'
+import { getUnsupportedNodeExecutionMessage } from '@/lib/workflow-engine/execution-support'
 import type { NodeExecutorContext } from '@/lib/workflow-engine/executors'
 
 // =============================================
@@ -37,17 +38,14 @@ export const POST = apiHandler(async (request: NextRequest) => {
     const { session } = authResult
 
     // ── Resolve context ──
-    const locale = resolveRequiredTaskLocale(request, body as any)
+    const locale = resolveRequiredTaskLocale(request, body)
     const projectModelConfig = await getProjectModelConfig(projectId, session.user.id)
 
     // ── Lookup executor ──
     const executor = NODE_EXECUTOR_REGISTRY[nodeType]
     if (!executor) {
-        return NextResponse.json({
-            success: true,
-            nodeId,
-            mock: true,
-            message: `Node type "${nodeType}" execution not yet implemented. Coming soon.`,
+        throw new ApiError('INVALID_PARAMS', {
+            message: getUnsupportedNodeExecutionMessage(nodeType),
         })
     }
 

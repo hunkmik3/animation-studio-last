@@ -136,7 +136,12 @@ export async function handlePanelVariantTask(job: Job<TaskJobData>) {
   // 额外加入源镜头图片作为参考
   const sourcePanelImageUrl = toSignedUrlIfCos(sourcePanel.imageUrl, 3600)
   if (sourcePanelImageUrl) refs.unshift(sourcePanelImageUrl)
-  const normalizedRefs = await normalizeReferenceImagesForGeneration(refs)
+  let normalizedRefs: string[] = []
+  try {
+    normalizedRefs = await normalizeReferenceImagesForGeneration(refs)
+  } catch {
+    // Graceful degradation: proceed without reference images when files are missing
+  }
 
   // 使用 agent_shot_variant_generate.txt 提示词模板
   const artStyle = getArtStylePrompt(modelConfig.artStyle, job.data.locale)

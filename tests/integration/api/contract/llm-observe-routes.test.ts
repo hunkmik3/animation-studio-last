@@ -26,7 +26,7 @@ const authState = vi.hoisted<AuthState>(() => ({
 }))
 
 const maybeSubmitLLMTaskMock = vi.hoisted(() =>
-  vi.fn(async () => new Response(
+  vi.fn<(arg: Record<string, unknown>) => Promise<Response>>(async () => new Response(
     JSON.stringify({ taskId: 'task-1', async: true }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   )),

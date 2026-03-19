@@ -2,6 +2,19 @@
   {
     "modelType": "image",
     "provider": "fal",
+    "modelId": "banana",
+    "capabilities": {
+      "image": {
+        "resolutionOptions": [
+          "2K",
+          "4K"
+        ]
+      }
+    }
+  },
+  {
+    "modelType": "image",
+    "provider": "fal",
     "modelId": "banana-2",
     "capabilities": {
       "image": {

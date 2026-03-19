@@ -21,19 +21,15 @@ import type { NodeExecutor } from './types'
  * the original pipeline. The workflow editor's WorkflowTaskMonitor
  * component listens for task completion and updates the node state.
  *
- * Without panelId: returns a message explaining that image generation
- * requires a linked panel (via "Pull from Workspace" action).
+ * Without panelId: fails explicitly because production generation requires
+ * a linked workspace panel context.
  *
  * Parity: FULL (when panelId provided) — uses identical code path
  * as the workspace "Generate Image" button.
  */
 export const executeImageGenerate: NodeExecutor = async (ctx) => {
   if (!ctx.panelId) {
-    return {
-      outputs: {},
-      mock: true,
-      message: 'Image generation requires a linked panel. Use "Pull from Workspace" to link nodes to panels.',
-    }
+    throw new Error('Image generation requires a linked panel. Use "Pull from Workspace" to link nodes to panels.')
   }
 
   const panel = await prisma.novelPromotionPanel.findUnique({
@@ -48,6 +44,10 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     throw new Error('Image model not configured. Set a model in node settings or project config.')
   }
 
+  const customPrompt = typeof ctx.config.customPrompt === 'string' && ctx.config.customPrompt.trim()
+    ? ctx.config.customPrompt.trim()
+    : undefined
+
   let billingPayload: Record<string, unknown>
   try {
     billingPayload = await buildImageBillingPayload({
@@ -59,6 +59,10 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Image model capability not configured'
     throw new Error(message)
+  }
+
+  if (customPrompt) {
+    billingPayload.customPrompt = customPrompt
   }
 
   const result = await submitTask({

@@ -9,6 +9,7 @@ import { memo, useCallback } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import { useWorkflowStore } from '../useWorkflowStore'
+import { getWorkflowBoundaryDescriptor, resolveWorkflowNodeContextIssue } from '@/features/workflow-editor/workspace-boundary'
 import {
     FileText, Bot, Users, MapPin, LayoutGrid, ImageIcon,
     Video, Mic, ZoomIn, Film, GitBranch, Download,
@@ -79,6 +80,18 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
 
     const Icon = ICON_MAP[def.icon]
     const status = executionState?.status || 'idle'
+    const boundary = getWorkflowBoundaryDescriptor(nodeType)
+    const contextIssue = resolveWorkflowNodeContextIssue({
+        nodeId: id,
+        nodeType,
+        nodeData: nodeData as unknown as Record<string, unknown>,
+        label: nodeData.label || def.title,
+    })
+    const bindActionLabel = contextIssue?.missing.includes('panelId')
+        ? 'Bind panel'
+        : contextIssue?.missing.includes('episodeId') || contextIssue?.missing.includes('lineId')
+            ? 'Bind line'
+            : 'Bind context'
 
     return (
         <div
@@ -122,6 +135,12 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                     {Icon && <Icon className="w-4 h-4" style={{ color: def.color }} />}
                     <span className="text-xs font-semibold text-slate-200 flex-1 truncate">
                         {nodeData.label || def.title}
+                    </span>
+                    <span className={`text-[8px] px-1 py-0.5 rounded ${boundary.kind === 'workspace-linked'
+                        ? 'bg-amber-500/20 text-amber-300'
+                        : 'bg-emerald-500/20 text-emerald-300'
+                        }`}>
+                        {boundary.kind === 'workspace-linked' ? 'Workspace' : 'Native'}
                     </span>
                     <StatusBadge status={status} />
                     {(status === 'completed' || status === 'skipped') ? (
@@ -234,6 +253,23 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                     {executionState && status === 'failed' && (
                         <div className="mt-1 p-1 rounded bg-red-500/10 text-[9px] text-red-400 truncate">
                             {executionState.error || 'Error'}
+                        </div>
+                    )}
+
+                    {contextIssue && status === 'idle' && (
+                        <div className="mt-1 p-1 rounded bg-amber-500/10 text-[9px] text-amber-300" title={contextIssue.message}>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="truncate">Missing {contextIssue.missing.join(', ')}</span>
+                                <button
+                                    onClick={(event) => {
+                                        event.stopPropagation()
+                                        selectNode(id)
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 transition-colors"
+                                >
+                                    {bindActionLabel}
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>

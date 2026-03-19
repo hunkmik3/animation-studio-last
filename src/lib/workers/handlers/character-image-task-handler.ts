@@ -119,7 +119,12 @@ export async function handleCharacterImageTask(job: Job<TaskJobData>) {
       }
     }
   }
-  const primaryReferenceImages = await normalizeReferenceImagesForGeneration(primaryReferenceInputs)
+  let primaryReferenceImages: string[] = []
+  try {
+    primaryReferenceImages = await normalizeReferenceImagesForGeneration(primaryReferenceInputs)
+  } catch {
+    // Graceful degradation: proceed without reference images when files are missing
+  }
 
   const singleIndex = payload.imageIndex ?? payload.descriptionIndex
   const indexes = singleIndex !== undefined

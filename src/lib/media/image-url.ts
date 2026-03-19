@@ -1,11 +1,12 @@
 const LOCAL_ORIGIN = 'http://localhost'
 const NEXT_IMAGE_PATH = '/_next/image'
-const COS_SIGN_PATH = '/api/cos/sign'
+const COS_SIGN_PATH = '/api/cos/image'
 const MAX_NEXT_UNWRAP_DEPTH = 5
 const STORAGE_KEY_PREFIXES = ['images/', 'video/', 'voice/'] as const
 
 function isStorageKey(value: string): boolean {
-  return STORAGE_KEY_PREFIXES.some((prefix) => value.startsWith(prefix))
+  const normalized = value.startsWith('/') ? value.slice(1) : value
+  return STORAGE_KEY_PREFIXES.some((prefix) => normalized.startsWith(prefix))
 }
 
 function tryParseUrl(value: string): URL | null {
@@ -48,6 +49,10 @@ export function unwrapNextImageUrl(input: string): string {
   return current
 }
 
+function stripLeadingSlash(value: string): string {
+  return value.startsWith('/') ? value.slice(1) : value
+}
+
 export function toDisplayImageUrl(input: string | null | undefined): string | null {
   if (!input) return null
   const raw = input.trim()
@@ -55,7 +60,7 @@ export function toDisplayImageUrl(input: string | null | undefined): string | nu
 
   const unwrapped = unwrapNextImageUrl(raw)
   if (isStorageKey(unwrapped)) {
-    return `${COS_SIGN_PATH}?key=${encodeURIComponent(unwrapped)}`
+    return `${COS_SIGN_PATH}?key=${encodeURIComponent(stripLeadingSlash(unwrapped))}`
   }
 
   return unwrapped
@@ -68,7 +73,7 @@ export function resolveOriginalImageUrl(input: string | null | undefined): strin
 
   const unwrapped = unwrapNextImageUrl(raw)
   if (isStorageKey(unwrapped)) {
-    return `${COS_SIGN_PATH}?key=${encodeURIComponent(unwrapped)}`
+    return `${COS_SIGN_PATH}?key=${encodeURIComponent(stripLeadingSlash(unwrapped))}`
   }
 
   const parsed = tryParseUrl(unwrapped)

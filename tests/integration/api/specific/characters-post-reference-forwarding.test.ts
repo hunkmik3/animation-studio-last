@@ -52,7 +52,7 @@ describe('api specific - characters POST forwarding to reference task', () => {
   })
 
   it('forwards locale and accept-language into background reference task payload', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
     const mod = await import('@/app/api/asset-hub/characters/route')
@@ -70,7 +70,7 @@ describe('api specific - characters POST forwarding to reference task', () => {
       },
     })
 
-    const res = await mod.POST(req)
+    const res = await mod.POST(req, { params: Promise.resolve({}) })
     expect(res.status).toBe(200)
 
     const calledUrl = fetchMock.mock.calls[0]?.[0]
@@ -99,7 +99,7 @@ describe('api specific - characters POST forwarding to reference task', () => {
 
   it('returns unauthorized when auth fails', async () => {
     authMock.requireUserAuth.mockResolvedValueOnce(
-      NextResponse.json({ error: { code: 'UNAUTHORIZED' } }, { status: 401 }),
+      NextResponse.json({ error: { code: 'UNAUTHORIZED' } }, { status: 401 }) as never,
     )
     const mod = await import('@/app/api/asset-hub/characters/route')
     const req = buildMockRequest({
@@ -108,7 +108,7 @@ describe('api specific - characters POST forwarding to reference task', () => {
       body: { name: 'Hero' },
     })
 
-    const res = await mod.POST(req)
+    const res = await mod.POST(req, { params: Promise.resolve({}) })
     expect(res.status).toBe(401)
   })
 })

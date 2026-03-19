@@ -107,7 +107,12 @@ export async function handleAssetHubModifyTask(job: Job<TaskJobData>) {
       }
     }
     const requiredReference = await stripLabelBar(currentUrl)
-    const normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    let normalizedExtras: string[] = []
+    try {
+      normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    } catch {
+      // Graceful degradation: proceed without extra reference images
+    }
     const referenceImages = Array.from(new Set([requiredReference, ...normalizedExtras]))
 
     const prompt = `请根据以下指令修改图片，保持人物核心特征一致：\n${payload.modifyPrompt || ''}`
@@ -190,7 +195,12 @@ export async function handleAssetHubModifyTask(job: Job<TaskJobData>) {
       }
     }
     const requiredReference = await stripLabelBar(currentUrl)
-    const normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    let normalizedExtras: string[] = []
+    try {
+      normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    } catch {
+      // Graceful degradation: proceed without extra reference images
+    }
     const referenceImages = Array.from(new Set([requiredReference, ...normalizedExtras]))
 
     const prompt = `请根据以下指令修改场景图片，保持整体风格一致：\n${payload.modifyPrompt || ''}`

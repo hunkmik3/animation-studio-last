@@ -6,6 +6,8 @@
 
 import { useState, useCallback, type DragEvent } from 'react'
 import { NODE_TYPES_BY_CATEGORY, CATEGORY_LABELS, NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
+import { isNodeTypeExecutionSupported } from '@/lib/workflow-engine/execution-support'
+import { getWorkflowBoundaryDescriptor } from '@/features/workflow-editor/workspace-boundary'
 import {
     FileText, Bot, Users, MapPin, LayoutGrid, ImageIcon,
     Video, Mic, ZoomIn, Film, GitBranch, Download,
@@ -32,7 +34,9 @@ export function NodePalette() {
         e.dataTransfer.effectAllowed = 'move'
     }, [])
 
-    const allNodeTypes = Object.values(NODE_TYPE_REGISTRY)
+    const allNodeTypes = Object.values(NODE_TYPE_REGISTRY).filter((node) =>
+        isNodeTypeExecutionSupported(node.type),
+    )
     const filteredTypes = search
         ? allNodeTypes.filter(
             (n) =>
@@ -46,6 +50,7 @@ export function NodePalette() {
             {/* Header */}
             <div className="p-3 border-b border-slate-800">
                 <h3 className="text-sm font-semibold text-slate-200 mb-2">Node Library</h3>
+                <p className="text-[10px] text-slate-500 mb-2">Launch-safe nodes only</p>
                 <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
                     <input
@@ -82,13 +87,27 @@ export function NodePalette() {
                                 <div className="min-w-0">
                                     <div className="text-xs font-medium text-slate-200 truncate">{def.title}</div>
                                     <div className="text-[10px] text-slate-500 truncate">{def.description}</div>
+                                    <div className="mt-1">
+                                        <span className={`text-[9px] px-1.5 py-0.5 rounded ${getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
+                                            ? 'bg-amber-500/15 text-amber-300'
+                                            : 'bg-emerald-500/15 text-emerald-300'
+                                            }`}>
+                                            {getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
+                                                ? 'Workspace Context'
+                                                : 'Workflow Native'}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         )
                     })
                 ) : (
                     // Category view
-                    Object.entries(NODE_TYPES_BY_CATEGORY).map(([category, nodes]) => (
+                    Object.entries(NODE_TYPES_BY_CATEGORY).map(([category, nodes]) => {
+                        const launchReadyNodes = nodes.filter((node) => isNodeTypeExecutionSupported(node.type))
+                        if (launchReadyNodes.length === 0) return null
+
+                        return (
                         <div key={category}>
                             <button
                                 onClick={() => toggleCategory(category)}
@@ -104,7 +123,7 @@ export function NodePalette() {
 
                             {expandedCategories[category] && (
                                 <div className="space-y-0.5 ml-1">
-                                    {nodes.map((def) => {
+                                    {launchReadyNodes.map((def) => {
                                         const Icon = ICON_MAP[def.icon]
                                         return (
                                             <div
@@ -123,6 +142,16 @@ export function NodePalette() {
                                                 )}
                                                 <div className="min-w-0">
                                                     <div className="text-[11px] font-medium text-slate-300 truncate">{def.title}</div>
+                                                    <div className="mt-0.5">
+                                                        <span className={`text-[9px] px-1 py-0.5 rounded ${getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
+                                                            ? 'bg-amber-500/15 text-amber-300'
+                                                            : 'bg-emerald-500/15 text-emerald-300'
+                                                            }`}>
+                                                            {getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
+                                                                ? 'Workspace'
+                                                                : 'Native'}
+                                                        </span>
+                                                    </div>
                                                 </div>
                                             </div>
                                         )
@@ -130,14 +159,14 @@ export function NodePalette() {
                                 </div>
                             )}
                         </div>
-                    ))
+                    )})
                 )}
             </div>
 
             {/* Footer hint */}
             <div className="p-3 border-t border-slate-800">
                 <p className="text-[10px] text-slate-600 text-center">
-                    Drag nodes to canvas • Click to configure
+                    Green: workflow-native • Amber: needs workspace context
                 </p>
             </div>
         </div>

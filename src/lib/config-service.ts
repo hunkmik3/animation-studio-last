@@ -9,12 +9,13 @@
 import { prisma } from '@/lib/prisma'
 import {
   type CapabilitySelections,
+  type CapabilityOptionValue,
   type CapabilityValue,
   composeModelKey as composeStrictModelKey,
   parseModelKeyStrict,
 } from '@/lib/model-config-contract'
 import { findBuiltinCapabilities } from '@/lib/model-capabilities/catalog'
-import { resolveGenerationOptionsForModel } from '@/lib/model-capabilities/lookup'
+import { getCapabilityOptionFields, resolveGenerationOptionsForModel } from '@/lib/model-capabilities/lookup'
 
 export type ParsedModelKey = { provider: string, modelId: string }
 
@@ -142,6 +143,66 @@ export async function getProjectModelConfig(
   }
 }
 
+function toRuntimeCapabilitySelections(value: unknown): Record<string, CapabilityValue> {
+  if (!isRecord(value)) return {}
+  const selections: Record<string, CapabilityValue> = {}
+  for (const [field, raw] of Object.entries(value)) {
+    if (field === 'aspectRatio') continue
+    if (!isCapabilityValue(raw)) continue
+    selections[field] = raw
+  }
+  return selections
+}
+
+function toImageRuntimeSelections(basePayload: Record<string, unknown>): Record<string, CapabilityValue> {
+  const fromGenerationOptions = toRuntimeCapabilitySelections(basePayload.generationOptions)
+  if (fromGenerationOptions.resolution === undefined && isCapabilityValue(basePayload.resolution)) {
+    fromGenerationOptions.resolution = basePayload.resolution
+  }
+  return fromGenerationOptions
+}
+
+function pickPreferredCapabilityOption(
+  field: string,
+  allowedValues: readonly CapabilityOptionValue[],
+): CapabilityValue | undefined {
+  if (allowedValues.length === 0) return undefined
+  if (field === 'resolution') {
+    const preferredOrder = ['1080p', '2K', '1K', 'HD', '720p', '1024x1024', '512x512']
+    for (const preferred of preferredOrder) {
+      const found = allowedValues.find((value) => value === preferred)
+      if (found !== undefined) return found as CapabilityValue
+    }
+  }
+  return allowedValues[0] as CapabilityValue
+}
+
+function withAutofilledRuntimeSelections(input: {
+  modelType: 'llm' | 'image' | 'video'
+  modelKey: string
+  runtimeSelections: Record<string, CapabilityValue>
+}): Record<string, CapabilityValue> {
+  const parsed = parseModelKeyStrict(input.modelKey)
+  if (!parsed) return input.runtimeSelections
+
+  const capabilities = findBuiltinCapabilities(input.modelType, parsed.provider, parsed.modelId)
+  if (!capabilities) return input.runtimeSelections
+
+  const optionFields = getCapabilityOptionFields(input.modelType, capabilities)
+  if (Object.keys(optionFields).length === 0) return input.runtimeSelections
+
+  const selections: Record<string, CapabilityValue> = { ...input.runtimeSelections }
+  for (const [field, allowedValues] of Object.entries(optionFields)) {
+    if (selections[field] !== undefined) continue
+    const picked = pickPreferredCapabilityOption(field, allowedValues)
+    if (picked !== undefined) {
+      selections[field] = picked
+    }
+  }
+
+  return selections
+}
+
 /**
  * 获取用户级模型配置（无项目时使用）
  */
@@ -173,6 +234,17 @@ export function resolveModelCapabilityGenerationOptions(input: {
     throw new Error(`MODEL_KEY_INVALID: ${input.modelKey}`)
   }
 
+  const runtimeSelections = input.runtimeSelections
+    ? { ...input.runtimeSelections }
+    : {}
+  const resolvedRuntimeSelections = input.modelType === 'llm'
+    ? runtimeSelections
+    : withAutofilledRuntimeSelections({
+      modelType: input.modelType,
+      modelKey: input.modelKey,
+      runtimeSelections,
+    })
+
   const capabilities = findBuiltinCapabilities(input.modelType, parsed.provider, parsed.modelId)
   const resolved = resolveGenerationOptionsForModel({
     modelType: input.modelType,
@@ -180,7 +252,7 @@ export function resolveModelCapabilityGenerationOptions(input: {
     capabilities,
     capabilityDefaults: input.capabilityDefaults,
     capabilityOverrides: input.capabilityOverrides,
-    runtimeSelections: input.runtimeSelections,
+    runtimeSelections: resolvedRuntimeSelections,
     requireAllFields: input.modelType !== 'llm',
   })
 
@@ -264,6 +336,12 @@ export async function buildImageBillingPayload(input: {
   const { projectId, userId, imageModel, basePayload } = input
   if (!imageModel) return basePayload
 
+  const runtimeSelections = withAutofilledRuntimeSelections({
+    modelType: 'image',
+    modelKey: imageModel,
+    runtimeSelections: toImageRuntimeSelections(basePayload),
+  })
+
   let capabilityOptions: Record<string, CapabilityValue> = {}
   try {
     capabilityOptions = await resolveProjectModelCapabilityGenerationOptions({
@@ -271,6 +349,7 @@ export async function buildImageBillingPayload(input: {
       userId,
       modelType: 'image',
       modelKey: imageModel,
+      runtimeSelections,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Image model capability not configured'
@@ -297,12 +376,19 @@ export function buildImageBillingPayloadFromUserConfig(input: {
   const { userModelConfig, imageModel, basePayload } = input
   if (!imageModel) return basePayload
 
+  const runtimeSelections = withAutofilledRuntimeSelections({
+    modelType: 'image',
+    modelKey: imageModel,
+    runtimeSelections: toImageRuntimeSelections(basePayload),
+  })
+
   let capabilityOptions: Record<string, CapabilityValue> = {}
   try {
     capabilityOptions = resolveModelCapabilityGenerationOptions({
       modelType: 'image',
       modelKey: imageModel,
       capabilityDefaults: userModelConfig.capabilityDefaults,
+      runtimeSelections,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Image model capability not configured'

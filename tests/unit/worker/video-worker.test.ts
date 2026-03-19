@@ -26,7 +26,7 @@ const utilsMock = vi.hoisted(() => ({
   assertTaskActive: vi.fn(async () => undefined),
   getProjectModels: vi.fn(async () => ({ videoRatio: '16:9' })),
   resolveLipSyncVideoSource: vi.fn(async () => 'https://provider.example/lipsync.mp4'),
-  resolveVideoSourceFromGeneration: vi.fn(async () => ({ url: 'https://provider.example/video.mp4' })),
+  resolveVideoSourceFromGeneration: vi.fn(async () => ({ url: 'https://provider.example/video.mp4' } as { url: string; downloadHeaders?: Record<string, string> })),
   toSignedUrlIfCos: vi.fn((url: string | null) => (url ? `https://signed.example/${url}` : null)),
   uploadVideoSourceToCos: vi.fn(async () => 'cos/lip-sync/video.mp4'),
 }))

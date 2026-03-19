@@ -17,8 +17,22 @@ import {
     addEdge,
 } from '@xyflow/react'
 import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
+import {
+    getUnsupportedNodeExecutionMessage,
+    isNodeTypeExecutionSupported,
+} from '@/lib/workflow-engine/execution-support'
 import type { ExecutionStatus, NodeExecutionState } from '@/lib/workflow-engine/types'
-import { persistNodeOutput, updateExecutionStatus } from './api'
+import type { WorkflowContinuationMarker } from '@/lib/workflow-engine/continuation'
+import type { WorkflowExecutionCursor, WorkflowExecutionLease } from '@/lib/workflow-engine/execution-authority'
+import { isWorkflowExecutionLeaseExpired } from '@/lib/workflow-engine/execution-authority'
+import { acquireExecutionResumeLease, persistNodeOutput, startWorkflowExecution, updateExecutionStatus } from './api'
+import { isUsableNodeOutput, resolvePanelIdFromNode } from './execution-contract'
+import { buildWorkflowGraphSignature } from './execution-signature'
+import { collectUnsupportedExecutionNodes, sanitizeWorkflowGraph } from './graph-contract'
+import {
+    collectWorkflowExecutionContextIssues,
+    resolveWorkflowNodeContextIssue,
+} from './workspace-boundary'
 
 // ── Topological sort for workflow execution order ──
 function topologicalSort(nodes: Node[], edges: Edge[]): string[] {
@@ -51,10 +65,54 @@ function configSnapshot(config: Record<string, unknown>): string {
     catch { return '' }
 }
 
+function toRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    return value as Record<string, unknown>
+}
+
+function readStringValue(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : ''
+}
+
+function enrichOutputsWithExecutionMeta(params: {
+    outputs: Record<string, unknown>
+    temporaryImplementation: boolean
+    parityNotes: string
+    metadata: Record<string, unknown>
+}): Record<string, unknown> {
+    const nextOutputs: Record<string, unknown> = { ...params.outputs }
+    if (params.temporaryImplementation) {
+        nextOutputs._temporaryImplementation = true
+    }
+    if (params.parityNotes) {
+        nextOutputs._parityNotes = params.parityNotes
+    }
+    if (Object.keys(params.metadata).length > 0) {
+        nextOutputs._metadata = params.metadata
+    }
+    return nextOutputs
+}
+
 interface PersistedNodeOutput {
     outputs: Record<string, unknown>
     configSnapshot: string | null
     completedAt: string
+}
+
+interface PendingWorkflowContinuation {
+    runToken: string
+    order: string[]
+    nextIndex: number
+    pausedNodeId: string
+    freshlyExecutedNodeIds: string[]
+    graphSignature: string
+}
+
+type ContinuationRecoveryStatus = 'idle' | 'waiting' | 'ready' | 'stale'
+
+interface ContinuationRecoveryState {
+    status: ContinuationRecoveryStatus
+    reason: string | null
 }
 
 interface WorkflowMeta {
@@ -91,20 +149,38 @@ interface WorkflowStore {
     executionStatus: ExecutionStatus
     nodeExecutionStates: Record<string, NodeExecutionState>
     nodeOutputs: Record<string, Record<string, unknown>>
+    clientInstanceId: string
+    activeRunToken: string | null
+    activeExecutionLeaseId: string | null
+    executionCursor: WorkflowExecutionCursor | null
+    pendingContinuation: PendingWorkflowContinuation | null
+    recoverableContinuation: PendingWorkflowContinuation | null
+    continuationRecovery: ContinuationRecoveryState
+    continuationInFlightKey: string | null
     setExecutionStatus: (status: ExecutionStatus) => void
     setNodeExecutionState: (nodeId: string, state: NodeExecutionState) => void
     setNodeOutput: (nodeId: string, outputs: Record<string, unknown>) => void
     resetExecution: () => void
     executeSingleNode: (nodeId: string) => Promise<void>
     executeWorkflow: () => Promise<void>
+    resumeWorkflowAfterAsync: (completedNodeId: string) => Promise<void>
+    resumeRecoverableContinuation: () => Promise<void>
+    failWorkflowRun: () => Promise<void>
+    setContinuationRecovery: (status: ContinuationRecoveryStatus, reason?: string | null) => void
+    invalidateRecoverableContinuation: (reason: string) => Promise<void>
 
     // ── Persistence (Phase 2) ──
     currentExecutionId: string | null
     persistedOutputs: Record<string, PersistedNodeOutput> | null
+    setCurrentExecutionId: (executionId: string | null) => void
+    upsertPersistedOutput: (nodeId: string, entry: PersistedNodeOutput) => void
     hydrateFromExecution: (data: {
         executionId: string | null
         outputData: Record<string, PersistedNodeOutput> | null
         nodeStates: Record<string, NodeExecutionState> | null
+        continuation: WorkflowContinuationMarker | null
+        cursor: WorkflowExecutionCursor | null
+        lease: WorkflowExecutionLease | null
     }) => void
     forceRerunNode: (nodeId: string) => Promise<void>
     forceRerunAll: () => Promise<void>
@@ -125,7 +201,349 @@ function generateNodeId(): string {
     return `node_${Date.now()}_${nodeIdCounter}`
 }
 
-export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
+function generateWorkflowRunToken(): string {
+    return `run_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+const WORKFLOW_CLIENT_INSTANCE_STORAGE_KEY = 'workflow-editor-client-instance-id'
+
+function generateClientInstanceId(): string {
+    return `wf_client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function getWorkflowClientInstanceId(): string {
+    if (typeof window === 'undefined') {
+        return 'wf_client_server'
+    }
+    try {
+        const existing = window.sessionStorage.getItem(WORKFLOW_CLIENT_INSTANCE_STORAGE_KEY)
+        if (existing && existing.trim().length > 0) {
+            return existing
+        }
+        const next = generateClientInstanceId()
+        window.sessionStorage.setItem(WORKFLOW_CLIENT_INSTANCE_STORAGE_KEY, next)
+        return next
+    } catch {
+        return generateClientInstanceId()
+    }
+}
+
+function buildExecutionCursor(params: {
+    runToken: string
+    graphSignature: string
+    phase: WorkflowExecutionCursor['phase']
+    nextIndex: number
+    currentNodeId?: string | null
+    pausedNodeId?: string | null
+}): WorkflowExecutionCursor {
+    return {
+        runToken: params.runToken,
+        graphSignature: params.graphSignature,
+        phase: params.phase,
+        nextIndex: params.nextIndex,
+        currentNodeId: params.currentNodeId || null,
+        pausedNodeId: params.pausedNodeId || null,
+        updatedAt: new Date().toISOString(),
+    }
+}
+
+export const useWorkflowStore = create<WorkflowStore>((set, get) => {
+    const setContinuationRecoveryState = (
+        status: ContinuationRecoveryStatus,
+        reason: string | null = null,
+    ) => {
+        set({ continuationRecovery: { status, reason } })
+    }
+
+    const isExecutionAuthorityConflict = (error: unknown): boolean => {
+        if (!(error instanceof Error)) return false
+        return error.message.includes('EXECUTION_AUTHORITY_CONFLICT')
+    }
+
+    const handleExecutionAuthorityConflict = (message: string) => {
+        set({
+            executionStatus: 'failed',
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: null,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationInFlightKey: null,
+        })
+        setContinuationRecoveryState('stale', message)
+    }
+
+    const persistExecutionCursor = async (
+        cursor: WorkflowExecutionCursor | null,
+        options?: { allowCreateExecution?: boolean }
+    ) => {
+        const workflowId = get().meta?.id
+        if (!workflowId) return
+        const executionId = get().currentExecutionId
+        const leaseId = get().activeExecutionLeaseId
+        const allowCreateExecution = options?.allowCreateExecution === true
+        if (!executionId && !allowCreateExecution) return
+
+        try {
+            await persistNodeOutput(workflowId, {
+                executionId: executionId || undefined,
+                nodeId: '',
+                cursor,
+                leaseId: leaseId || undefined,
+            })
+        } catch (error) {
+            if (isExecutionAuthorityConflict(error)) {
+                handleExecutionAuthorityConflict('Execution authority conflict detected. Please rerun workflow.')
+                return
+            }
+            // non-authority failures are non-blocking
+        }
+    }
+
+    const persistContinuationMarker = async (
+        continuation: WorkflowContinuationMarker | null,
+        options?: { allowCreateExecution?: boolean },
+    ) => {
+        const workflowId = get().meta?.id
+        if (!workflowId) return
+
+        const executionId = get().currentExecutionId
+        const leaseId = get().activeExecutionLeaseId
+        const allowCreateExecution = options?.allowCreateExecution === true
+        if (!executionId && !allowCreateExecution) return
+
+        try {
+            const response = await persistNodeOutput(workflowId, {
+                executionId: executionId || undefined,
+                nodeId: '',
+                continuation,
+                leaseId: leaseId || undefined,
+            })
+            if (response?.executionId && !get().currentExecutionId) {
+                set({ currentExecutionId: response.executionId })
+            }
+        } catch (error) {
+            if (isExecutionAuthorityConflict(error)) {
+                handleExecutionAuthorityConflict('Execution authority conflict detected. Please rerun workflow.')
+                return
+            }
+            // continuation persistence is best-effort
+        }
+    }
+
+    const invalidateRecoverableContinuationInternal = async (reason: string) => {
+        const recoverable = get().recoverableContinuation
+        if (!recoverable) return
+
+        set({
+            recoverableContinuation: null,
+            continuationInFlightKey: null,
+        })
+        setContinuationRecoveryState('stale', reason)
+        await persistContinuationMarker(null, { allowCreateExecution: false })
+        set({ activeExecutionLeaseId: null, executionCursor: null })
+    }
+
+    const finalizeWorkflowStatus = (status: 'completed' | 'failed') => {
+        const state = get()
+        const workflowId = state.meta?.id
+        const execId = state.currentExecutionId
+        const leaseId = state.activeExecutionLeaseId
+        const runToken = state.activeRunToken
+        const priorCursor = state.executionCursor
+        const finalCursor = runToken && priorCursor
+            ? buildExecutionCursor({
+                runToken,
+                graphSignature: priorCursor.graphSignature,
+                phase: status,
+                nextIndex: priorCursor.nextIndex,
+                currentNodeId: null,
+                pausedNodeId: null,
+            })
+            : null
+
+        set({
+            executionStatus: status,
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: finalCursor,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationInFlightKey: null,
+        })
+        setContinuationRecoveryState('idle')
+
+        if (workflowId && execId) {
+            updateExecutionStatus(
+                workflowId,
+                execId,
+                status,
+                null,
+                finalCursor,
+                leaseId || undefined,
+            ).catch((error) => {
+                if (isExecutionAuthorityConflict(error)) {
+                    handleExecutionAuthorityConflict('Execution authority conflict detected while finalizing run.')
+                }
+            })
+        }
+    }
+
+    const closeOpenExecutionContext = async (state: {
+        meta: WorkflowMeta
+        currentExecutionId: string | null
+        executionStatus: ExecutionStatus
+        pendingContinuation: PendingWorkflowContinuation | null
+        recoverableContinuation: PendingWorkflowContinuation | null
+        activeExecutionLeaseId: string | null
+    }) => {
+        if (!state.meta.id || !state.currentExecutionId) return
+        const hasOpenExecutionContext = (
+            state.executionStatus === 'running'
+            || Boolean(state.pendingContinuation)
+            || Boolean(state.recoverableContinuation)
+            || Boolean(state.activeExecutionLeaseId)
+        )
+        if (!hasOpenExecutionContext) return
+
+        try {
+            await updateExecutionStatus(
+                state.meta.id,
+                state.currentExecutionId,
+                'failed',
+                null,
+                null,
+                state.activeExecutionLeaseId || undefined,
+            )
+        } catch (error) {
+            if (isExecutionAuthorityConflict(error)) {
+                handleExecutionAuthorityConflict('Execution authority conflict detected while starting a new run.')
+                throw error
+            }
+            throw new Error('Failed to close previous workflow run before starting a new run.')
+        }
+
+        set({
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: null,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: null,
+        })
+    }
+
+    const continueWorkflowExecution = async (params: {
+        runToken: string
+        order: string[]
+        startIndex: number
+        freshlyExecutedNodeIds: string[]
+        graphSignature: string
+    }) => {
+        const freshlyExecuted = new Set(params.freshlyExecutedNodeIds)
+
+        for (let index = params.startIndex; index < params.order.length; index++) {
+            const before = get()
+            if (before.executionStatus !== 'running') return
+            if (before.activeRunToken !== params.runToken) return
+
+            const nodeId = params.order[index]
+            const node = before.nodes.find(n => n.id === nodeId)
+            const nodeData = toRecord(node?.data)
+            const nodeType = typeof nodeData.nodeType === 'string' ? nodeData.nodeType : ''
+            const config = toRecord(nodeData.config)
+
+            const runningCursor = buildExecutionCursor({
+                runToken: params.runToken,
+                graphSignature: params.graphSignature,
+                phase: 'running',
+                nextIndex: index,
+                currentNodeId: nodeId,
+                pausedNodeId: null,
+            })
+            set({ executionCursor: runningCursor })
+            void persistExecutionCursor(runningCursor, { allowCreateExecution: false })
+
+            const persisted = before.persistedOutputs?.[nodeId]
+            if (persisted && isUsableNodeOutput(nodeType, persisted.outputs)) {
+                const currentSnap = configSnapshot(config)
+                const isConfigFresh = persisted.configSnapshot === currentSnap
+                const upstreamEdges = before.edges.filter(e => e.target === nodeId)
+                const allUpstreamSkipped = upstreamEdges.every(e => !freshlyExecuted.has(e.source))
+
+                if (isConfigFresh && allUpstreamSkipped) {
+                    set((s) => ({
+                        nodeOutputs: { ...s.nodeOutputs, [nodeId]: persisted.outputs },
+                        nodeExecutionStates: {
+                            ...s.nodeExecutionStates,
+                            [nodeId]: {
+                                status: 'skipped',
+                                progress: 100,
+                                message: 'Reused from previous run',
+                                completedAt: persisted.completedAt,
+                                outputs: persisted.outputs,
+                            }
+                        }
+                    }))
+                    continue
+                }
+            }
+
+            freshlyExecuted.add(nodeId)
+            await before.executeSingleNode(nodeId)
+
+            const after = get()
+            if (after.executionStatus !== 'running') return
+            if (after.activeRunToken !== params.runToken) return
+
+            const nodeState = after.nodeExecutionStates[nodeId]
+            if (nodeState?.status === 'failed') {
+                finalizeWorkflowStatus('failed')
+                return
+            }
+
+            if (nodeState?.status === 'running') {
+                const continuation: PendingWorkflowContinuation = {
+                    runToken: params.runToken,
+                    order: params.order,
+                    nextIndex: index + 1,
+                    pausedNodeId: nodeId,
+                    freshlyExecutedNodeIds: Array.from(freshlyExecuted),
+                    graphSignature: params.graphSignature,
+                }
+                const pausedCursor = buildExecutionCursor({
+                    runToken: params.runToken,
+                    graphSignature: params.graphSignature,
+                    phase: 'paused',
+                    nextIndex: continuation.nextIndex,
+                    currentNodeId: continuation.pausedNodeId,
+                    pausedNodeId: continuation.pausedNodeId,
+                })
+                set({
+                    pendingContinuation: continuation,
+                    recoverableContinuation: null,
+                    executionCursor: pausedCursor,
+                })
+                setContinuationRecoveryState('idle')
+                void persistExecutionCursor(pausedCursor, { allowCreateExecution: false })
+                void persistContinuationMarker({
+                    runToken: continuation.runToken,
+                    order: continuation.order,
+                    nextIndex: continuation.nextIndex,
+                    pausedNodeId: continuation.pausedNodeId,
+                    freshlyExecutedNodeIds: continuation.freshlyExecutedNodeIds,
+                    graphSignature: continuation.graphSignature,
+                    updatedAt: new Date().toISOString(),
+                }, { allowCreateExecution: true })
+                return
+            }
+        }
+
+        finalizeWorkflowStatus('completed')
+    }
+
+    return ({
     // ── UI Actions ──
     toggleGroupCollapse: (id) => {
         set((s) => {
@@ -202,16 +620,19 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     onNodesChange: (changes) => {
         set({ nodes: applyNodeChanges(changes, get().nodes) })
         set((s) => ({ meta: { ...s.meta, isSaved: false } }))
+        void invalidateRecoverableContinuationInternal('Workflow graph changed. Saved continuation is stale.')
     },
 
     onEdgesChange: (changes) => {
         set({ edges: applyEdgeChanges(changes, get().edges) })
         set((s) => ({ meta: { ...s.meta, isSaved: false } }))
+        void invalidateRecoverableContinuationInternal('Workflow connections changed. Saved continuation is stale.')
     },
 
     onConnect: (connection) => {
         set({ edges: addEdge({ ...connection, animated: true, style: { strokeWidth: 2 } }, get().edges) })
         set((s) => ({ meta: { ...s.meta, isSaved: false } }))
+        void invalidateRecoverableContinuationInternal('Workflow connections changed. Saved continuation is stale.')
     },
 
     // ── Meta ──
@@ -238,6 +659,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
             nodes: [...s.nodes, newNode],
             meta: { ...s.meta, isSaved: false },
         }))
+        void invalidateRecoverableContinuationInternal('Workflow graph changed. Saved continuation is stale.')
     },
 
     removeNode: (id) => {
@@ -247,6 +669,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
             selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
             meta: { ...s.meta, isSaved: false },
         }))
+        void invalidateRecoverableContinuationInternal('Workflow graph changed. Saved continuation is stale.')
     },
 
     updateNodeConfig: (id, config) => {
@@ -256,6 +679,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
             ),
             meta: { ...s.meta, isSaved: false },
         }))
+        void invalidateRecoverableContinuationInternal('Node configuration changed. Saved continuation is stale.')
     },
 
     updateNodeData: (id, data) => {
@@ -274,32 +698,70 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     executionStatus: 'idle',
     nodeExecutionStates: {},
     nodeOutputs: {},
+    clientInstanceId: getWorkflowClientInstanceId(),
+    activeRunToken: null,
+    activeExecutionLeaseId: null,
+    executionCursor: null,
+    pendingContinuation: null,
+    recoverableContinuation: null,
+    continuationRecovery: { status: 'idle', reason: null },
+    continuationInFlightKey: null,
     setExecutionStatus: (status) => set({ executionStatus: status }),
     setNodeExecutionState: (nodeId, state) =>
         set((s) => ({ nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: state } })),
     setNodeOutput: (nodeId, outputs) =>
         set((s) => ({ nodeOutputs: { ...s.nodeOutputs, [nodeId]: outputs } })),
-    resetExecution: () => set({ executionStatus: 'idle', nodeExecutionStates: {}, nodeOutputs: {}, currentExecutionId: null }),
+    resetExecution: () => set({
+        executionStatus: 'idle',
+        nodeExecutionStates: {},
+        nodeOutputs: {},
+        currentExecutionId: null,
+        activeRunToken: null,
+        activeExecutionLeaseId: null,
+        executionCursor: null,
+        pendingContinuation: null,
+        recoverableContinuation: null,
+        continuationRecovery: { status: 'idle', reason: null },
+        continuationInFlightKey: null,
+    }),
 
     // ── Persistence (Phase 2) ──
     currentExecutionId: null,
     persistedOutputs: null,
+    setCurrentExecutionId: (executionId) => set({ currentExecutionId: executionId }),
+    upsertPersistedOutput: (nodeId, entry) => {
+        set((s) => ({
+            persistedOutputs: {
+                ...(s.persistedOutputs || {}),
+                [nodeId]: entry,
+            },
+        }))
+    },
 
     hydrateFromExecution: (data) => {
-        if (!data.outputData) return
         const hydrated: Record<string, Record<string, unknown>> = {}
         const hydratedStates: Record<string, NodeExecutionState> = {}
+        const usablePersistedOutputs: Record<string, PersistedNodeOutput> = {}
+        const persistedOutputData = data.outputData || {}
+        const clientInstanceId = get().clientInstanceId
+        const nodeTypeById = new Map(
+            get().nodes.map((node) => [node.id, toRecord(node.data).nodeType]).map(([id, nodeType]) => [
+                id,
+                typeof nodeType === 'string' ? nodeType : '',
+            ]),
+        )
 
-        for (const [nodeId, entry] of Object.entries(data.outputData)) {
-            if (entry.outputs && Object.keys(entry.outputs).length > 0) {
-                hydrated[nodeId] = entry.outputs
-                hydratedStates[nodeId] = {
-                    status: 'completed',
-                    progress: 100,
-                    message: 'Restored from previous run',
-                    completedAt: entry.completedAt,
-                    outputs: entry.outputs,
-                }
+        for (const [nodeId, entry] of Object.entries(persistedOutputData)) {
+            const nodeType = nodeTypeById.get(nodeId) || ''
+            if (!isUsableNodeOutput(nodeType, entry.outputs)) continue
+            hydrated[nodeId] = entry.outputs
+            usablePersistedOutputs[nodeId] = entry
+            hydratedStates[nodeId] = {
+                status: 'completed',
+                progress: 100,
+                message: 'Restored from previous run',
+                completedAt: entry.completedAt,
+                outputs: entry.outputs,
             }
         }
 
@@ -310,11 +772,97 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
             mergedOutputs[nodeId] = { ...(currentOutputs[nodeId] || {}), ...outputs }
         }
 
+        const persistedNodeStates = data.nodeStates || {}
+        const graphSignature = buildWorkflowGraphSignature(get().nodes, get().edges)
+        const continuation = data.continuation
+        const cursorFromServer = data.cursor || null
+        const leaseFromServer = data.lease && !isWorkflowExecutionLeaseExpired(data.lease) ? data.lease : null
+
+        let recoverableContinuation: PendingWorkflowContinuation | null = null
+        let continuationRecovery: ContinuationRecoveryState = { status: 'idle', reason: null }
+        let activeExecutionLeaseId: string | null = null
+
+        if (continuation) {
+            const hasValidOrder = continuation.order.includes(continuation.pausedNodeId)
+            const hasValidIndex = continuation.nextIndex >= 0 && continuation.nextIndex <= continuation.order.length
+            if (!hasValidOrder || !hasValidIndex) {
+                continuationRecovery = {
+                    status: 'stale',
+                    reason: 'Saved async continuation context is invalid. Please rerun the workflow.',
+                }
+            } else if (continuation.graphSignature !== graphSignature) {
+                continuationRecovery = {
+                    status: 'stale',
+                    reason: 'Workflow graph changed since async pause. Please rerun the workflow.',
+                }
+            } else if (
+                leaseFromServer
+                && leaseFromServer.runToken === continuation.runToken
+                && leaseFromServer.holderClientId !== clientInstanceId
+            ) {
+                continuationRecovery = {
+                    status: 'stale',
+                    reason: 'Another session currently owns continuation authority for this run.',
+                }
+            } else {
+                recoverableContinuation = {
+                    runToken: continuation.runToken,
+                    order: continuation.order,
+                    nextIndex: continuation.nextIndex,
+                    pausedNodeId: continuation.pausedNodeId,
+                    freshlyExecutedNodeIds: continuation.freshlyExecutedNodeIds,
+                    graphSignature: continuation.graphSignature,
+                }
+                if (
+                    leaseFromServer
+                    && leaseFromServer.runToken === continuation.runToken
+                    && leaseFromServer.holderClientId === clientInstanceId
+                ) {
+                    activeExecutionLeaseId = leaseFromServer.leaseId
+                }
+
+                const pausedNodeType = nodeTypeById.get(continuation.pausedNodeId) || ''
+                const pausedState = persistedNodeStates[continuation.pausedNodeId]
+                const pausedOutputCandidate = (pausedState?.outputs as Record<string, unknown> | undefined)
+                    || hydrated[continuation.pausedNodeId]
+                    || mergedOutputs[continuation.pausedNodeId]
+                const pausedHasUsableOutput = isUsableNodeOutput(pausedNodeType, pausedOutputCandidate)
+
+                continuationRecovery = pausedHasUsableOutput
+                    ? { status: 'ready', reason: null }
+                    : { status: 'waiting', reason: 'Waiting for async task output to become available.' }
+            }
+        }
+        if (continuation && continuationRecovery.status === 'stale' && !leaseFromServer) {
+            const workflowId = get().meta?.id
+            if (workflowId && data.executionId) {
+                void persistNodeOutput(workflowId, {
+                    executionId: data.executionId,
+                    nodeId: '',
+                    continuation: null,
+                })
+            } else {
+                void persistContinuationMarker(null, { allowCreateExecution: false })
+            }
+        }
+
         set({
+            executionStatus: 'idle',
             currentExecutionId: data.executionId,
-            persistedOutputs: data.outputData,
+            persistedOutputs: Object.keys(usablePersistedOutputs).length > 0 ? usablePersistedOutputs : null,
             nodeOutputs: mergedOutputs,
-            nodeExecutionStates: { ...get().nodeExecutionStates, ...hydratedStates },
+            activeRunToken: null,
+            activeExecutionLeaseId,
+            executionCursor: cursorFromServer,
+            pendingContinuation: null,
+            recoverableContinuation,
+            continuationRecovery,
+            continuationInFlightKey: null,
+            nodeExecutionStates: {
+                ...get().nodeExecutionStates,
+                ...persistedNodeStates,
+                ...hydratedStates,
+            },
         })
     },
 
@@ -322,9 +870,27 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         const node = get().nodes.find(n => n.id === nodeId)
         if (!node) return
 
-        const data = node.data as any
-        const nodeType = data?.nodeType
-        const config = data?.config || {}
+        const nodeData = toRecord(node.data)
+        const nodeType = typeof nodeData.nodeType === 'string' ? nodeData.nodeType : ''
+        const config = toRecord(nodeData.config)
+        const initialOutput = toRecord(nodeData.initialOutput)
+        const workflowId = get().meta?.id
+
+        if (!nodeType) {
+            const errMsg = 'Node type is missing'
+            set((s) => ({
+                nodeExecutionStates: {
+                    ...s.nodeExecutionStates,
+                    [nodeId]: {
+                        status: 'failed',
+                        progress: 0,
+                        message: errMsg,
+                        error: errMsg,
+                    }
+                }
+            }))
+            return
+        }
 
         // ── Collect inputs from connected upstream nodes ──
         const inputs: Record<string, unknown> = {}
@@ -332,18 +898,93 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
         const currentOutputs = get().nodeOutputs
         for (const edge of incomingEdges) {
             const sourceOutputs = currentOutputs[edge.source]
-            if (sourceOutputs && edge.sourceHandle) {
-                const targetKey = (edge.targetHandle as string) || (edge.sourceHandle as string)
-                const value = sourceOutputs[edge.sourceHandle as string]
-                if (value !== undefined) inputs[targetKey] = value
+            const sourceHandle = typeof edge.sourceHandle === 'string' ? edge.sourceHandle : ''
+            if (sourceOutputs && sourceHandle) {
+                const targetHandle = typeof edge.targetHandle === 'string' ? edge.targetHandle : sourceHandle
+                const value = sourceOutputs[sourceHandle]
+                if (value !== undefined) inputs[targetHandle] = value
             }
+        }
+
+        const persistState = (nodeState: NodeExecutionState, outputs?: Record<string, unknown>) => {
+            if (!workflowId) return
+
+            const payload = {
+                executionId: get().currentExecutionId || undefined,
+                nodeId,
+                nodeState,
+                leaseId: get().activeExecutionLeaseId || undefined,
+                ...(outputs ? {
+                    outputs,
+                    configSnapshot: configSnapshot(config),
+                } : {}),
+            }
+
+            persistNodeOutput(workflowId, payload)
+                .then((resp) => {
+                    if (resp?.executionId && !get().currentExecutionId) {
+                        set({ currentExecutionId: resp.executionId })
+                    }
+                    if (!outputs || !isUsableNodeOutput(nodeType, outputs)) return
+                    get().upsertPersistedOutput(nodeId, {
+                        outputs,
+                        configSnapshot: configSnapshot(config),
+                        completedAt: nodeState.completedAt || new Date().toISOString(),
+                    })
+                })
+                .catch((error) => {
+                    if (isExecutionAuthorityConflict(error)) {
+                        handleExecutionAuthorityConflict('Execution authority conflict detected while updating node state.')
+                    }
+                })
+        }
+
+        if (!isNodeTypeExecutionSupported(nodeType)) {
+            const errMsg = getUnsupportedNodeExecutionMessage(nodeType)
+            const failedState: NodeExecutionState = {
+                status: 'failed',
+                progress: 0,
+                message: errMsg,
+                error: errMsg,
+            }
+            set((s) => ({
+                nodeExecutionStates: {
+                    ...s.nodeExecutionStates,
+                    [nodeId]: failedState,
+                },
+            }))
+            persistState(failedState)
+            return
+        }
+
+        const contextIssue = resolveWorkflowNodeContextIssue({
+            nodeId,
+            nodeType,
+            nodeData,
+            label: typeof nodeData.label === 'string' ? nodeData.label : nodeId,
+        })
+        if (contextIssue) {
+            const failedState: NodeExecutionState = {
+                status: 'failed',
+                progress: 0,
+                message: contextIssue.message,
+                error: contextIssue.message,
+            }
+            set((s) => ({
+                nodeExecutionStates: {
+                    ...s.nodeExecutionStates,
+                    [nodeId]: failedState,
+                },
+            }))
+            persistState(failedState)
+            return
         }
 
         // Mark running
         set((s) => ({
             nodeExecutionStates: {
                 ...s.nodeExecutionStates,
-                [nodeId]: { status: 'running', progress: 10, message: 'Preparing...' }
+                [nodeId]: { status: 'running', progress: 10, message: 'Preparing...', startedAt: new Date().toISOString() }
             }
         }))
 
@@ -353,14 +994,12 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
             const projectId = get().meta?.projectId || searchParams.get('projectId') || ''
 
             // Try to extract panelId if this node is linked to a workspace panel
-            const panelId = data?.panelId || (nodeId.startsWith('img_') || nodeId.startsWith('vid_')
-                ? nodeId.replace(/^(img_|vid_)/, '')
-                : null)
+            const panelId = resolvePanelIdFromNode(nodeId, nodeData)
 
             set((s) => ({
                 nodeExecutionStates: {
                     ...s.nodeExecutionStates,
-                    [nodeId]: { status: 'running', progress: 30, message: 'Submitting task...' }
+                    [nodeId]: { status: 'running', progress: 30, message: 'Submitting task...', startedAt: s.nodeExecutionStates[nodeId]?.startedAt || new Date().toISOString() }
                 }
             }))
 
@@ -377,44 +1016,52 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                 }),
             })
 
-            const result = await res.json()
+            const result = toRecord(await res.json())
 
             if (!res.ok) {
-                throw new Error(result.message || result.error || 'Execution failed')
+                const message = typeof result.message === 'string'
+                    ? result.message
+                    : typeof result.error === 'string'
+                        ? result.error
+                        : 'Execution failed'
+                throw new Error(message)
             }
 
-            set((s) => ({
-                nodeExecutionStates: {
-                    ...s.nodeExecutionStates,
-                    [nodeId]: { status: 'running', progress: 60, message: result.mock ? 'Mock execution...' : 'Task submitted, waiting...' }
-                }
-            }))
-
-            // Helper: persist outputs to DB (fire-and-forget)
-            const workflowId = get().meta?.id
-            const doPersist = (outputs: Record<string, unknown>, nodeState: NodeExecutionState) => {
-                if (!workflowId) return
-                persistNodeOutput(workflowId, {
-                    executionId: get().currentExecutionId || undefined,
-                    nodeId,
-                    outputs,
-                    configSnapshot: configSnapshot(config),
-                    nodeState,
-                }).then(resp => {
-                    if (resp?.executionId && !get().currentExecutionId) {
-                        set({ currentExecutionId: resp.executionId })
-                    }
-                }).catch(() => { /* persistence failure is non-blocking */ })
+            if (result.mock === true) {
+                throw new Error(
+                    typeof result.message === 'string' && result.message.trim().length > 0
+                        ? result.message
+                        : `Node "${nodeType}" is currently unsupported.`,
+                )
             }
 
-            // If the API returned outputs directly — store them for downstream nodes
-            // Merge with initialOutput so typed data (characters/scenes) is preserved
-            if (result.outputs) {
-                const mergedOutputs = { ...(data?.initialOutput || {}), ...result.outputs }
+            const parityNotes = readStringValue(result.parityNotes)
+            const temporaryImplementation = result.temporaryImplementation === true
+            const metadata = toRecord(result.metadata)
+            if (parityNotes || temporaryImplementation || Object.keys(metadata).length > 0) {
+                get().updateNodeData(nodeId, {
+                    lastExecutionMeta: {
+                        temporaryImplementation,
+                        parityNotes: parityNotes || null,
+                        metadata,
+                    },
+                })
+            }
+
+            const resultOutputs = enrichOutputsWithExecutionMeta({
+                outputs: toRecord(result.outputs),
+                temporaryImplementation,
+                parityNotes,
+                metadata,
+            })
+            if (isUsableNodeOutput(nodeType, resultOutputs)) {
+                const mergedOutputs = { ...initialOutput, ...resultOutputs }
                 const nodeState: NodeExecutionState = {
                     status: 'completed',
                     progress: 100,
-                    message: 'Done',
+                    message: typeof result.message === 'string' && result.message.trim().length > 0
+                        ? result.message
+                        : 'Done',
                     completedAt: new Date().toISOString(),
                     outputs: mergedOutputs
                 }
@@ -422,167 +1069,360 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
                     nodeOutputs: { ...s.nodeOutputs, [nodeId]: mergedOutputs },
                     nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
                 }))
-                doPersist(mergedOutputs, nodeState)
+                persistState(nodeState, mergedOutputs)
                 return
             }
 
-            // If a real task was submitted, mark as completed
-            // (In Phase 5, this will poll SSE for real-time progress)
-            if (result.taskId) {
-                // For now, simulate a brief wait then mark completed
-                await new Promise((r) => setTimeout(r, 1500))
-
+            const taskId = typeof result.taskId === 'string' ? result.taskId : ''
+            if (taskId) {
                 const nodeState: NodeExecutionState = {
-                    status: 'completed',
-                    progress: 100,
-                    message: `Task submitted: ${result.taskId.slice(0, 8)}...`,
-                    completedAt: new Date().toISOString(),
+                    status: 'running',
+                    progress: 70,
+                    message: typeof result.message === 'string' && result.message.trim().length > 0
+                        ? `${result.message} (task ${taskId.slice(0, 8)}...)`
+                        : `Task submitted (${taskId.slice(0, 8)}...), waiting for completion`,
+                    startedAt: get().nodeExecutionStates[nodeId]?.startedAt || new Date().toISOString(),
                 }
                 set((s) => ({
                     nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
                 }))
-                doPersist({ _taskId: result.taskId, _async: true }, nodeState)
+                persistState(nodeState)
                 return
             }
 
-            // Mock fallback — use initialOutput or generate placeholder
-            const initialOutput = data?.initialOutput || null
-            let generatedOutputs: Record<string, unknown> = initialOutput || {}
-
-            if (!initialOutput) {
-                if (nodeType === 'image-generate') {
-                    generatedOutputs = { image: 'https://images.unsplash.com/photo-1541562232579-512a21360020' }
-                } else if (nodeType === 'video-generate') {
-                    generatedOutputs = { video: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' }
-                } else if (nodeType === 'text-input') {
-                    generatedOutputs = { text: config?.content || '' }
-                }
+            if (typeof result.message === 'string' && result.message.trim().length > 0) {
+                throw new Error(result.message)
             }
-
-            const nodeState: NodeExecutionState = {
-                status: 'completed',
-                progress: 100,
-                message: result.message || 'Done (mock)',
-                completedAt: new Date().toISOString(),
-                outputs: generatedOutputs
-            }
-            set((s) => ({
-                nodeOutputs: { ...s.nodeOutputs, [nodeId]: generatedOutputs },
-                nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
-            }))
-            doPersist(generatedOutputs, nodeState)
+            throw new Error(`Node "${nodeType}" returned no usable output and no async task id`)
         } catch (err) {
             const errMsg = err instanceof Error ? err.message : 'Unknown error'
+            const failedState: NodeExecutionState = {
+                status: 'failed',
+                progress: 0,
+                message: errMsg,
+                error: errMsg,
+            }
             set((s) => ({
                 nodeExecutionStates: {
                     ...s.nodeExecutionStates,
-                    [nodeId]: {
-                        status: 'failed',
-                        progress: 0,
-                        message: errMsg,
-                        error: errMsg,
-                    }
+                    [nodeId]: failedState
                 }
             }))
+            persistState(failedState)
         }
     },
 
     // ── Execute full workflow in topological order (with resume) ──
     executeWorkflow: async () => {
-        const { nodes, edges, persistedOutputs } = get()
-        const execOrder = topologicalSort(nodes, edges)
+        const currentState = get()
+        const workflowId = currentState.meta.id
+        if (!workflowId) {
+            throw new Error('Please save workflow before running so execution authority can be established.')
+        }
+        await closeOpenExecutionContext(currentState)
+        const stateAfterClose = get()
+        const sanitizedGraph = sanitizeWorkflowGraph({
+            nodes: stateAfterClose.nodes,
+            edges: stateAfterClose.edges,
+        })
+        if (sanitizedGraph.changed) {
+            set({
+                nodes: sanitizedGraph.nodes,
+                edges: sanitizedGraph.edges,
+            })
+        }
 
-        // Track which nodes were freshly executed (not skipped) — used to invalidate downstream
-        const freshlyExecuted = new Set<string>()
+        const unsupportedNodes = collectUnsupportedExecutionNodes(sanitizedGraph.nodes)
+        if (unsupportedNodes.length > 0) {
+            const unsupportedSummary = unsupportedNodes
+                .map((node) => `${node.label} (${node.nodeType})`)
+                .slice(0, 5)
+                .join(', ')
+            throw new Error(
+                `Workflow contains unsupported execution nodes: ${unsupportedSummary}. Remove or replace unsupported nodes before running.`,
+            )
+        }
 
-        // Don't wipe outputs — preserve persisted ones for resume
-        set({ executionStatus: 'running' })
+        const contextIssues = collectWorkflowExecutionContextIssues(sanitizedGraph.nodes)
+        if (contextIssues.length > 0) {
+            const contextSummary = contextIssues
+                .map((issue) => `${issue.label}: ${issue.missing.join('+')}`)
+                .slice(0, 5)
+                .join(', ')
+            throw new Error(
+                `Workflow contains nodes missing required workspace context: ${contextSummary}. Pull from Workspace or complete node settings before running.`,
+            )
+        }
 
-        // Mark all as pending initially
+        const execOrder = topologicalSort(sanitizedGraph.nodes, sanitizedGraph.edges)
+        if (execOrder.length === 0) {
+            set({ executionStatus: 'idle' })
+            return
+        }
+        const runToken = generateWorkflowRunToken()
+        const graphSignature = buildWorkflowGraphSignature(sanitizedGraph.nodes, sanitizedGraph.edges)
+        const startResult = await startWorkflowExecution(workflowId, {
+            runToken,
+            graphSignature,
+            clientInstanceId: stateAfterClose.clientInstanceId,
+        })
+        if (!startResult.granted || !startResult.executionId || !startResult.lease) {
+            const message = startResult.message || 'Unable to acquire execution authority for this run.'
+            handleExecutionAuthorityConflict(message)
+            throw new Error(message)
+        }
+
         const pendingStates: Record<string, NodeExecutionState> = {}
         for (const nodeId of execOrder) {
             pendingStates[nodeId] = { status: 'pending', progress: 0 }
         }
-        set({ nodeExecutionStates: pendingStates })
+        set({
+            executionStatus: 'running',
+            activeRunToken: runToken,
+            activeExecutionLeaseId: startResult.lease.leaseId,
+            executionCursor: startResult.cursor || buildExecutionCursor({
+                runToken,
+                graphSignature,
+                phase: 'running',
+                nextIndex: 0,
+                currentNodeId: execOrder[0] || null,
+                pausedNodeId: null,
+            }),
+            currentExecutionId: startResult.executionId,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: null,
+            nodeExecutionStates: pendingStates,
+        })
+        void persistContinuationMarker(null, { allowCreateExecution: false })
+        void persistExecutionCursor(buildExecutionCursor({
+            runToken,
+            graphSignature,
+            phase: 'running',
+            nextIndex: 0,
+            currentNodeId: execOrder[0] || null,
+            pausedNodeId: null,
+        }), { allowCreateExecution: false })
 
-        // Execute each node in topological order
-        for (const nodeId of execOrder) {
-            if (get().executionStatus !== 'running') break
+        await continueWorkflowExecution({
+            runToken,
+            order: execOrder,
+            startIndex: 0,
+            freshlyExecutedNodeIds: [],
+            graphSignature,
+        })
+    },
 
-            const node = nodes.find(n => n.id === nodeId)
-            const nodeData = node?.data as any
-            const config = nodeData?.config || {}
+    resumeWorkflowAfterAsync: async (completedNodeId) => {
+        const state = get()
+        const pending = state.pendingContinuation
+        if (!pending) return
+        if (state.executionStatus !== 'running') return
+        if (state.activeRunToken !== pending.runToken) return
+        if (pending.pausedNodeId !== completedNodeId) return
 
-            // ── Resume logic: check if node can be skipped ──
-            const persisted = persistedOutputs?.[nodeId]
-            if (persisted && persisted.outputs && Object.keys(persisted.outputs).length > 0) {
-                // Check config staleness
-                const currentSnap = configSnapshot(config)
-                const isConfigFresh = persisted.configSnapshot === currentSnap
+        const lockKey = `${pending.runToken}:${completedNodeId}`
+        if (state.continuationInFlightKey === lockKey) return
 
-                // Check if all upstream nodes were skipped (not freshly executed)
-                const upstreamEdges = edges.filter(e => e.target === nodeId)
-                const allUpstreamSkipped = upstreamEdges.every(e => !freshlyExecuted.has(e.source))
+        const completedNode = state.nodes.find((node) => node.id === completedNodeId)
+        const nodeData = toRecord(completedNode?.data)
+        const nodeType = typeof nodeData.nodeType === 'string' ? nodeData.nodeType : ''
+        const nodeState = state.nodeExecutionStates[completedNodeId]
+        const outputCandidate = nodeState?.outputs || state.nodeOutputs[completedNodeId]
+        const isNodeCompleted = nodeState?.status === 'completed' || nodeState?.status === 'skipped'
+        if (!isNodeCompleted) return
+        if (!isUsableNodeOutput(nodeType, outputCandidate)) return
 
-                if (isConfigFresh && allUpstreamSkipped) {
-                    // Skip — reuse persisted output
-                    set((s) => ({
-                        nodeOutputs: { ...s.nodeOutputs, [nodeId]: persisted.outputs },
-                        nodeExecutionStates: {
-                            ...s.nodeExecutionStates,
-                            [nodeId]: {
-                                status: 'skipped',
-                                progress: 100,
-                                message: 'Reused from previous run',
-                                completedAt: persisted.completedAt,
-                                outputs: persisted.outputs,
-                            }
-                        }
-                    }))
-                    continue
-                }
-            }
+        set({
+            continuationInFlightKey: lockKey,
+            pendingContinuation: null,
+            executionCursor: buildExecutionCursor({
+                runToken: pending.runToken,
+                graphSignature: pending.graphSignature,
+                phase: 'running',
+                nextIndex: pending.nextIndex,
+                currentNodeId: pending.order[pending.nextIndex] || null,
+                pausedNodeId: null,
+            }),
+        })
+        void persistExecutionCursor(buildExecutionCursor({
+            runToken: pending.runToken,
+            graphSignature: pending.graphSignature,
+            phase: 'running',
+            nextIndex: pending.nextIndex,
+            currentNodeId: pending.order[pending.nextIndex] || null,
+            pausedNodeId: null,
+        }), { allowCreateExecution: false })
+        void persistContinuationMarker(null, { allowCreateExecution: false })
 
-            // ── Execute node ──
-            freshlyExecuted.add(nodeId)
-            await get().executeSingleNode(nodeId)
-            const state = get().nodeExecutionStates[nodeId]
-            if (state?.status === 'failed') {
-                set({ executionStatus: 'failed' })
-                // Update execution status in DB
-                const workflowId = get().meta?.id
-                const execId = get().currentExecutionId
-                if (workflowId && execId) {
-                    updateExecutionStatus(workflowId, execId, 'failed').catch(() => {})
-                }
-                return
+        try {
+            await continueWorkflowExecution({
+                runToken: pending.runToken,
+                order: pending.order,
+                startIndex: pending.nextIndex,
+                freshlyExecutedNodeIds: pending.freshlyExecutedNodeIds,
+                graphSignature: pending.graphSignature,
+            })
+        } finally {
+            if (get().continuationInFlightKey === lockKey) {
+                set({ continuationInFlightKey: null })
             }
         }
+    },
 
-        set({ executionStatus: 'completed' })
-
-        // Update execution status in DB
-        const workflowId = get().meta?.id
-        const execId = get().currentExecutionId
-        if (workflowId && execId) {
-            updateExecutionStatus(workflowId, execId, 'completed').catch(() => {})
+    resumeRecoverableContinuation: async () => {
+        const state = get()
+        const continuation = state.recoverableContinuation
+        if (!continuation) return
+        if (state.continuationRecovery.status !== 'ready') return
+        const workflowId = state.meta?.id
+        const executionId = state.currentExecutionId
+        if (!workflowId || !executionId) {
+            await invalidateRecoverableContinuationInternal('Execution context is missing. Please rerun workflow.')
+            return
         }
+
+        const pausedNode = state.nodes.find((node) => node.id === continuation.pausedNodeId)
+        const pausedNodeData = toRecord(pausedNode?.data)
+        const pausedNodeType = typeof pausedNodeData.nodeType === 'string' ? pausedNodeData.nodeType : ''
+        const pausedState = state.nodeExecutionStates[continuation.pausedNodeId]
+        const pausedOutputCandidate = pausedState?.outputs || state.nodeOutputs[continuation.pausedNodeId]
+        if (!isUsableNodeOutput(pausedNodeType, pausedOutputCandidate)) {
+            setContinuationRecoveryState('waiting', 'Async output is not ready yet.')
+            return
+        }
+
+        const currentGraphSignature = buildWorkflowGraphSignature(state.nodes, state.edges)
+        if (currentGraphSignature !== continuation.graphSignature) {
+            await invalidateRecoverableContinuationInternal('Workflow graph changed since async pause. Please rerun the workflow.')
+            return
+        }
+
+        const lockKey = `${continuation.runToken}:${continuation.pausedNodeId}:recovered`
+        if (state.continuationInFlightKey === lockKey) return
+        set({ continuationInFlightKey: lockKey })
+
+        const leaseResult = await acquireExecutionResumeLease(workflowId, {
+            executionId,
+            continuation: {
+                runToken: continuation.runToken,
+                order: continuation.order,
+                nextIndex: continuation.nextIndex,
+                pausedNodeId: continuation.pausedNodeId,
+                freshlyExecutedNodeIds: continuation.freshlyExecutedNodeIds,
+                graphSignature: continuation.graphSignature,
+                updatedAt: new Date().toISOString(),
+            },
+            clientInstanceId: state.clientInstanceId,
+        })
+        if (!leaseResult.granted || !leaseResult.lease) {
+            if (get().continuationInFlightKey === lockKey) {
+                set({ continuationInFlightKey: null })
+            }
+            await invalidateRecoverableContinuationInternal(
+                leaseResult.message || 'Execution continuation lease was denied by server authority.',
+            )
+            return
+        }
+
+        const resumedCursor = buildExecutionCursor({
+            runToken: continuation.runToken,
+            graphSignature: continuation.graphSignature,
+            phase: 'running',
+            nextIndex: continuation.nextIndex,
+            currentNodeId: continuation.order[continuation.nextIndex] || null,
+            pausedNodeId: null,
+        })
+
+        set({
+            executionStatus: 'running',
+            activeRunToken: continuation.runToken,
+            activeExecutionLeaseId: leaseResult.lease.leaseId,
+            executionCursor: resumedCursor,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: lockKey,
+        })
+        await persistContinuationMarker(null, { allowCreateExecution: false })
+        await persistExecutionCursor(resumedCursor, { allowCreateExecution: false })
+
+        try {
+            await continueWorkflowExecution({
+                runToken: continuation.runToken,
+                order: continuation.order,
+                startIndex: continuation.nextIndex,
+                freshlyExecutedNodeIds: continuation.freshlyExecutedNodeIds,
+                graphSignature: continuation.graphSignature,
+            })
+        } finally {
+            if (get().continuationInFlightKey === lockKey) {
+                set({ continuationInFlightKey: null })
+            }
+        }
+    },
+
+    setContinuationRecovery: (status, reason = null) => {
+        setContinuationRecoveryState(status, reason)
+    },
+
+    invalidateRecoverableContinuation: async (reason) => {
+        await invalidateRecoverableContinuationInternal(reason)
+    },
+
+    failWorkflowRun: async () => {
+        if (get().executionStatus !== 'running') return
+        finalizeWorkflowStatus('failed')
     },
 
     // ── Force re-run a single node (clear persisted output first) ──
     forceRerunNode: async (nodeId: string) => {
+        const shouldClearContinuation = Boolean(get().currentExecutionId)
         // Clear this node's persisted output from local state
         set((s) => {
-            const updated = { ...s.persistedOutputs }
+            const updated = { ...(s.persistedOutputs || {}) }
             delete updated[nodeId]
-            return { persistedOutputs: updated }
+            return {
+                persistedOutputs: updated,
+                activeRunToken: null,
+                activeExecutionLeaseId: null,
+                executionCursor: null,
+                pendingContinuation: null,
+                recoverableContinuation: null,
+                continuationRecovery: { status: 'idle', reason: null },
+                continuationInFlightKey: null,
+                executionStatus: 'idle',
+            }
         })
+        if (shouldClearContinuation) {
+            void persistContinuationMarker(null, { allowCreateExecution: false })
+        }
         await get().executeSingleNode(nodeId)
     },
 
     // ── Force re-run entire workflow (clear all persisted outputs) ──
     forceRerunAll: async () => {
-        set({ persistedOutputs: null, nodeOutputs: {}, nodeExecutionStates: {}, currentExecutionId: null })
+        const stateBeforeReset = get()
+        await closeOpenExecutionContext(stateBeforeReset)
+        const shouldClearContinuation = Boolean(get().currentExecutionId)
+        if (shouldClearContinuation) {
+            void persistContinuationMarker(null, { allowCreateExecution: false })
+        }
+        set({
+            persistedOutputs: null,
+            nodeOutputs: {},
+            nodeExecutionStates: {},
+            executionStatus: 'idle',
+            currentExecutionId: null,
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: null,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: null,
+        })
         await get().executeWorkflow()
     },
 
@@ -593,20 +1433,64 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     },
 
     loadFromJSON: (data) => {
+        const shouldClearContinuation = Boolean(get().currentExecutionId)
+        if (shouldClearContinuation) {
+            void persistContinuationMarker(null, { allowCreateExecution: false })
+        }
+        const sanitizedGraph = sanitizeWorkflowGraph({
+            nodes: Array.isArray(data.nodes) ? data.nodes : [],
+            edges: Array.isArray(data.edges) ? data.edges : [],
+        })
+
         // Pre-populate nodeOutputs from nodes that have initialOutput (e.g., Characters/Locations from workspace)
         const preloadedOutputs: Record<string, Record<string, unknown>> = {}
-        for (const node of data.nodes) {
-            const nd = node.data as any
-            if (nd?.initialOutput && typeof nd.initialOutput === 'object') {
-                preloadedOutputs[node.id] = nd.initialOutput
-            }
+        for (const node of sanitizedGraph.nodes) {
+            const nodeData = toRecord(node.data)
+            const initialOutput = toRecord(nodeData.initialOutput)
+            if (Object.keys(initialOutput).length > 0) preloadedOutputs[node.id] = initialOutput
         }
-        set({ nodes: data.nodes, edges: data.edges, nodeOutputs: preloadedOutputs })
+        set({
+            nodes: sanitizedGraph.nodes,
+            edges: sanitizedGraph.edges,
+            nodeOutputs: preloadedOutputs,
+            nodeExecutionStates: {},
+            currentExecutionId: null,
+            persistedOutputs: null,
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: null,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: null,
+            executionStatus: 'idle',
+        })
         set((s) => ({ meta: { ...s.meta, isSaved: true } }))
     },
 
     clear: () => {
-        set({ nodes: [], edges: [], selectedNodeId: null, currentExecutionId: null, persistedOutputs: null })
+        const shouldClearContinuation = Boolean(get().currentExecutionId)
+        if (shouldClearContinuation) {
+            void persistContinuationMarker(null, { allowCreateExecution: false })
+        }
+        set({
+            nodes: [],
+            edges: [],
+            selectedNodeId: null,
+            executionStatus: 'idle',
+            nodeExecutionStates: {},
+            nodeOutputs: {},
+            currentExecutionId: null,
+            persistedOutputs: null,
+            activeRunToken: null,
+            activeExecutionLeaseId: null,
+            executionCursor: null,
+            pendingContinuation: null,
+            recoverableContinuation: null,
+            continuationRecovery: { status: 'idle', reason: null },
+            continuationInFlightKey: null,
+        })
         set((s) => ({ meta: { ...s.meta, isSaved: false } }))
     },
-}))
+    })
+})

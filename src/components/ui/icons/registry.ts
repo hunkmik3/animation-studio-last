@@ -38,6 +38,7 @@ import {
   Image,
   ImagePlus,
   Info,
+  LayoutGrid,
   Lightbulb,
   Link2,
   Loader2,
@@ -182,6 +183,7 @@ export const iconRegistry = {
   cpu: Cpu,
   film: Film,
   folderOpen: FolderOpen,
+  layoutGrid: LayoutGrid,
 } as const satisfies Record<string, LucideIcon>
 
 export type AppIconName = keyof typeof iconRegistry

@@ -10,7 +10,9 @@ import type { NodeExecutor } from './types'
  * it serves as the entry point for user-provided text in the workflow.
  */
 export const executeTextInput: NodeExecutor = async (ctx) => {
-  const content = (ctx.config.content as string) || ''
+  const configuredContent = typeof ctx.config.content === 'string' ? ctx.config.content : ''
+  const upstreamText = typeof ctx.inputs.text === 'string' ? ctx.inputs.text : ''
+  const content = configuredContent.trim().length > 0 ? configuredContent : upstreamText
   return {
     outputs: { text: content },
   }

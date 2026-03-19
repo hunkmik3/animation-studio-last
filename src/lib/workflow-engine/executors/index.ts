@@ -18,6 +18,7 @@ import { executeSceneExtract } from './scene-extract'
 import { executeStoryboard } from './storyboard'
 import { executeImageGenerate } from './image-generate'
 import { executeVideoGenerate } from './video-generate'
+import { executeVoiceSynthesis } from './voice-synthesis'
 
 export const NODE_EXECUTOR_REGISTRY: Record<string, NodeExecutor> = {
   'text-input': executeTextInput,
@@ -27,6 +28,7 @@ export const NODE_EXECUTOR_REGISTRY: Record<string, NodeExecutor> = {
   'storyboard': executeStoryboard,
   'image-generate': executeImageGenerate,
   'video-generate': executeVideoGenerate,
+  'voice-synthesis': executeVoiceSynthesis,
 }
 
 // Re-export types for convenience

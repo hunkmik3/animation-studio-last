@@ -14,7 +14,11 @@ const TEXT_INPUT_NODE: WorkflowNodeTypeDefinition = {
     icon: 'FileText',
     category: 'input',
     color: '#6366f1',
-    inputs: [],
+    // Optional pass-through input keeps legacy synced graphs valid while
+    // still allowing text-input nodes to act as explicit content sources.
+    inputs: [
+        { id: 'text', name: 'Upstream Text (Optional)', type: 'text', required: false },
+    ],
     outputs: [
         { id: 'text', name: 'Text', type: 'text', required: true },
     ],
@@ -52,7 +56,7 @@ const LLM_PROMPT_NODE: WorkflowNodeTypeDefinition = {
 const CHARACTER_EXTRACT_NODE: WorkflowNodeTypeDefinition = {
     type: 'character-extract',
     title: 'Character Extract',
-    description: 'Extract character profiles from text using AI analysis',
+    description: 'Extract production-grade character profiles from text',
     icon: 'Users',
     category: 'ai',
     color: '#ec4899',
@@ -64,12 +68,18 @@ const CHARACTER_EXTRACT_NODE: WorkflowNodeTypeDefinition = {
         { id: 'summary', name: 'Summary', type: 'text', required: false },
     ],
     configFields: [
-        { key: 'prompt', label: 'Extraction Prompt', type: 'textarea', placeholder: 'Extract all characters from the story...', required: true },
+        {
+            key: 'prompt',
+            label: 'Prompt Override (Optional)',
+            type: 'textarea',
+            placeholder: 'Leave empty to use production character profile template',
+            required: false
+        },
         { key: 'model', label: 'AI Model', type: 'model-picker', required: true },
         { key: 'maxCharacters', label: 'Max Characters', type: 'number', defaultValue: 20 },
     ],
     defaultConfig: {
-        prompt: 'Analyze the following text and extract all characters. For each character provide: name, age, gender, appearance description, personality traits, and role in the story.\n\nText:\n{input}\n\nOutput a JSON array of character objects.',
+        prompt: '',
         model: '',
         maxCharacters: 20,
     },
@@ -78,7 +88,7 @@ const CHARACTER_EXTRACT_NODE: WorkflowNodeTypeDefinition = {
 const SCENE_EXTRACT_NODE: WorkflowNodeTypeDefinition = {
     type: 'scene-extract',
     title: 'Scene / Location Extract',
-    description: 'Extract scenes and locations from text',
+    description: 'Extract production-grade scenes and locations from text',
     icon: 'MapPin',
     category: 'ai',
     color: '#14b8a6',
@@ -90,12 +100,20 @@ const SCENE_EXTRACT_NODE: WorkflowNodeTypeDefinition = {
         { id: 'summary', name: 'Summary', type: 'text', required: false },
     ],
     configFields: [
-        { key: 'prompt', label: 'Extraction Prompt', type: 'textarea', placeholder: 'Extract all locations and scenes...', required: true },
+        {
+            key: 'prompt',
+            label: 'Prompt Override (Optional)',
+            type: 'textarea',
+            placeholder: 'Leave empty to use production location extraction template',
+            required: false
+        },
         { key: 'model', label: 'AI Model', type: 'model-picker', required: true },
+        { key: 'maxScenes', label: 'Max Scenes', type: 'number', defaultValue: 30 },
     ],
     defaultConfig: {
-        prompt: 'Analyze the following text and extract all locations/scenes. For each provide: name, visual description, atmosphere, time of day, and weather.\n\nText:\n{input}\n\nOutput a JSON array of scene objects.',
+        prompt: '',
         model: '',
+        maxScenes: 30,
     },
 }
 
@@ -160,6 +178,7 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], required: true
         },
         { key: 'model', label: 'Model', type: 'model-picker', required: true },
+        { key: 'customPrompt', label: 'Custom Prompt', type: 'textarea', placeholder: 'Leave empty to use auto-generated prompt from panel data. Enter a custom prompt to override.' },
         { key: 'negativePrompt', label: 'Negative Prompt', type: 'textarea' },
         {
             key: 'aspectRatio', label: 'Aspect Ratio', type: 'select', options: [
@@ -175,7 +194,7 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], defaultValue: '2K'
         },
     ],
-    defaultConfig: { provider: 'flux', model: '', negativePrompt: '', aspectRatio: '16:9', resolution: '2K' },
+    defaultConfig: { provider: 'flux', model: '', customPrompt: '', negativePrompt: '', aspectRatio: '16:9', resolution: '2K' },
 }
 
 const VIDEO_GENERATE_NODE: WorkflowNodeTypeDefinition = {
@@ -215,28 +234,29 @@ const VIDEO_GENERATE_NODE: WorkflowNodeTypeDefinition = {
 const VOICE_SYNTHESIS_NODE: WorkflowNodeTypeDefinition = {
     type: 'voice-synthesis',
     title: 'Voice Synthesis',
-    description: 'Generate voice audio from text with character voices',
+    description: 'Generate voice line audio via the production voice task pipeline',
     icon: 'Mic',
     category: 'media',
     color: '#a855f7',
     inputs: [
-        { id: 'text', name: 'Script Text', type: 'text', required: true },
+        { id: 'text', name: 'Line Text (Optional Override)', type: 'text', required: false },
         { id: 'characters', name: 'Characters', type: 'characters', required: false },
     ],
     outputs: [
         { id: 'audio', name: 'Audio', type: 'audio', required: true },
     ],
     configFields: [
-        {
-            key: 'provider', label: 'Provider', type: 'select', options: [
-                { label: 'CosyVoice (Alibaba)', value: 'cosyvoice' },
-                { label: 'Fish Audio', value: 'fishaudio' },
-            ], required: true
-        },
-        { key: 'voice', label: 'Default Voice', type: 'voice-picker' },
-        { key: 'speed', label: 'Speed', type: 'slider', min: 0.5, max: 2.0, step: 0.1, defaultValue: 1.0 },
+        { key: 'episodeId', label: 'Episode ID', type: 'text', placeholder: 'novelPromotion episode id', required: true },
+        { key: 'lineId', label: 'Voice Line ID', type: 'text', placeholder: 'novelPromotion voice line id', required: true },
+        { key: 'audioModel', label: 'Audio Model (Optional)', type: 'model-picker', required: false },
+        { key: 'updateLineContentFromInput', label: 'Update line content from input text', type: 'toggle', defaultValue: true },
     ],
-    defaultConfig: { provider: 'cosyvoice', voice: '', speed: 1.0 },
+    defaultConfig: {
+        episodeId: '',
+        lineId: '',
+        audioModel: '',
+        updateLineContentFromInput: true,
+    },
 }
 
 const UPSCALE_NODE: WorkflowNodeTypeDefinition = {

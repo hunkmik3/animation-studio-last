@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { apiHandler, ApiError } from '@/lib/api-errors'
+import {
+    WORKFLOW_CONTINUATION_STATE_KEY,
+    isWorkflowContinuationMarker,
+    type WorkflowContinuationMarker,
+} from '@/lib/workflow-engine/continuation'
+import {
+    WORKFLOW_EXECUTION_CURSOR_STATE_KEY,
+    WORKFLOW_EXECUTION_LEASE_STATE_KEY,
+    isWorkflowExecutionCursor,
+    isWorkflowExecutionLease,
+    isWorkflowExecutionLeaseExpired,
+    refreshWorkflowExecutionLease,
+    type WorkflowExecutionCursor,
+} from '@/lib/workflow-engine/execution-authority'
 
 type Params = { params: Promise<{ workflowId: string }> }
 
@@ -32,11 +46,26 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
     const { session } = authResult
     const { workflowId } = await context.params
 
-    const body = await request.json()
-    const { executionId, nodeId, outputs, configSnapshot, nodeState, status } = body
+    const body = await request.json() as {
+        executionId?: string
+        nodeId?: string
+        outputs?: Record<string, unknown>
+        configSnapshot?: string
+        nodeState?: Record<string, unknown>
+        status?: string
+        continuation?: WorkflowContinuationMarker | null
+        cursor?: WorkflowExecutionCursor | null
+        leaseId?: string
+    }
+    const { executionId, nodeId, outputs, configSnapshot, nodeState, status, continuation, cursor, leaseId } = body
+    const hasContinuationPatch = Object.prototype.hasOwnProperty.call(body, 'continuation')
+    const hasCursorPatch = Object.prototype.hasOwnProperty.call(body, 'cursor')
+    const normalizedLeaseId = typeof leaseId === 'string' && leaseId.trim().length > 0 ? leaseId.trim() : null
 
-    if (!nodeId && !status) {
-        throw new ApiError('INVALID_PARAMS', { message: 'nodeId is required (or status for execution-level update)' })
+    if (!nodeId && !status && !hasContinuationPatch && !hasCursorPatch) {
+        throw new ApiError('INVALID_PARAMS', {
+            message: 'nodeId, status, continuation patch, or cursor patch is required',
+        })
     }
 
     // Verify workflow ownership
@@ -73,7 +102,22 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
     }
 
     // Build update payload
-    const updateData: Record<string, unknown> = { updatedAt: new Date() }
+    const now = new Date()
+    const updateData: Record<string, unknown> = { updatedAt: now }
+    const existingNodeStates: Record<string, unknown> = execution.nodeStates
+        ? JSON.parse(execution.nodeStates)
+        : {}
+    const currentLease = isWorkflowExecutionLease(existingNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY])
+        ? existingNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+        : null
+    const leaseIsActive = currentLease ? !isWorkflowExecutionLeaseExpired(currentLease, now) : false
+    const leaseMismatch = Boolean(leaseIsActive && currentLease && normalizedLeaseId !== currentLease.leaseId)
+    const shouldValidateLease = Boolean((nodeId && (outputs || nodeState)) || status || hasContinuationPatch || hasCursorPatch)
+    if (shouldValidateLease && leaseMismatch) {
+        throw new ApiError('CONFLICT', {
+            message: 'Execution lease is held by another session',
+        })
+    }
 
     // Merge node output into outputData
     if (nodeId && outputs) {
@@ -88,12 +132,47 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
         updateData.outputData = JSON.stringify(existingOutputData)
     }
 
-    // Merge node state into nodeStates
-    if (nodeId && nodeState) {
-        const existingNodeStates = execution.nodeStates
-            ? JSON.parse(execution.nodeStates)
-            : {}
-        existingNodeStates[nodeId] = nodeState
+    // Merge node state / continuation marker into nodeStates
+    if ((nodeId && nodeState) || hasContinuationPatch || hasCursorPatch || status === 'completed' || status === 'failed') {
+        if (nodeId && nodeState) {
+            existingNodeStates[nodeId] = nodeState
+        }
+
+        if (hasContinuationPatch) {
+            if (continuation === null) {
+                delete existingNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+            } else if (isWorkflowContinuationMarker(continuation)) {
+                existingNodeStates[WORKFLOW_CONTINUATION_STATE_KEY] = continuation
+            } else {
+                throw new ApiError('INVALID_PARAMS', { message: 'Invalid continuation payload' })
+            }
+        }
+
+        if (hasCursorPatch) {
+            if (cursor === null) {
+                delete existingNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+            } else if (isWorkflowExecutionCursor(cursor)) {
+                existingNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY] = cursor
+            } else {
+                throw new ApiError('INVALID_PARAMS', { message: 'Invalid execution cursor payload' })
+            }
+        }
+
+        if (status === 'completed' || status === 'failed') {
+            delete existingNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+            delete existingNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+            if (!hasCursorPatch) {
+                delete existingNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+            }
+        } else if (
+            leaseIsActive
+            && currentLease
+            && normalizedLeaseId === currentLease.leaseId
+            && currentLease.runToken
+        ) {
+            existingNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY] = refreshWorkflowExecutionLease(currentLease, now)
+        }
+
         updateData.nodeStates = JSON.stringify(existingNodeStates)
     }
 
@@ -144,18 +223,54 @@ export const GET = apiHandler(async (_request: NextRequest, context: Params) => 
     })
 
     if (!execution || !execution.outputData) {
+        const parsedNodeStates: Record<string, unknown> = execution?.nodeStates ? JSON.parse(execution.nodeStates) : {}
+        const continuation = isWorkflowContinuationMarker(parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY])
+            ? parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+            : null
+        const cursor = isWorkflowExecutionCursor(parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY])
+            ? parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+            : null
+        const lease = isWorkflowExecutionLease(parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY])
+            ? parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+            : null
+        const activeLease = lease && !isWorkflowExecutionLeaseExpired(lease) ? lease : null
+        delete parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+        delete parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+        delete parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+
         return NextResponse.json({
             executionId: execution?.id || null,
             status: execution?.status || null,
             outputData: null,
-            nodeStates: null,
+            nodeStates: Object.keys(parsedNodeStates).length > 0 ? parsedNodeStates : null,
+            continuation,
+            cursor,
+            lease: activeLease,
         })
     }
+
+    const parsedNodeStates: Record<string, unknown> = execution.nodeStates ? JSON.parse(execution.nodeStates) : {}
+    const continuation = isWorkflowContinuationMarker(parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY])
+        ? parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+        : null
+    const cursor = isWorkflowExecutionCursor(parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY])
+        ? parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+        : null
+    const lease = isWorkflowExecutionLease(parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY])
+        ? parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+        : null
+    const activeLease = lease && !isWorkflowExecutionLeaseExpired(lease) ? lease : null
+    delete parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
+    delete parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
+    delete parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
 
     return NextResponse.json({
         executionId: execution.id,
         status: execution.status,
         outputData: JSON.parse(execution.outputData),
-        nodeStates: execution.nodeStates ? JSON.parse(execution.nodeStates) : null,
+        nodeStates: Object.keys(parsedNodeStates).length > 0 ? parsedNodeStates : null,
+        continuation,
+        cursor,
+        lease: activeLease,
     })
 })

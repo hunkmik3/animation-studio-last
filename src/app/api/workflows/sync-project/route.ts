@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Edge, Node } from '@xyflow/react'
 import { prisma } from '@/lib/prisma'
-import { requireUserAuth } from '@/lib/api-auth'
+import { requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { apiHandler, ApiError } from '@/lib/api-errors'
 
 export const GET = apiHandler(async (request: NextRequest) => {
-    const authResult = await requireUserAuth(request)
-    if ('error' in authResult) return authResult
+    const authResult = await requireUserAuth()
+    if (isErrorResponse(authResult)) return authResult
     const { session } = authResult
 
     const searchParams = request.nextUrl.searchParams
@@ -65,8 +66,8 @@ export const GET = apiHandler(async (request: NextRequest) => {
         throw new ApiError('NOT_FOUND', { message: 'No episodes found in project' })
     }
 
-    const nodes: any[] = []
-    const edges: any[] = []
+    const nodes: Node[] = []
+    const edges: Edge[] = []
 
     const novelProj = project.novelPromotionData
     const storyId = 'story_root'
@@ -88,7 +89,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
 
     // 2. Characters node (if characters exist in project)
     if (characters.length > 0) {
-        const charData = (characters as any[]).map(c => {
+        const charData = characters.map((c) => {
             // Parse profileData JSON if available
             let profileInfo: Record<string, unknown> = {}
             try { if (c.profileData) profileInfo = JSON.parse(c.profileData) } catch { /**/ }
@@ -120,7 +121,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
 
     // 3. Locations node (if locations exist in project)
     if (locations.length > 0) {
-        const locData = (locations as any[]).map(l => ({
+        const locData = locations.map((l) => ({
             id: l.id,
             name: l.name,
             description: l.summary || '',
@@ -218,7 +219,9 @@ export const GET = apiHandler(async (request: NextRequest) => {
                     data: {
                         nodeType: 'text-input',
                         label: `📝 Panel ${panel.panelIndex + 1} Image Prompt`,
-                        config: { content: panel.imagePrompt || panel.description || 'Panel image prompt' }
+                        config: { content: panel.imagePrompt || panel.description || 'Panel image prompt' },
+                        panelId: panel.id,
+                        workspaceBinding: 'panel-image-prompt',
                     }
                 })
 
@@ -232,7 +235,9 @@ export const GET = apiHandler(async (request: NextRequest) => {
                     data: {
                         nodeType: 'text-input',
                         label: `📝 Panel ${panel.panelIndex + 1} Video Prompt`,
-                        config: { content: panel.videoPrompt || panel.description || 'Panel video prompt' }
+                        config: { content: panel.videoPrompt || panel.description || 'Panel video prompt' },
+                        panelId: panel.id,
+                        workspaceBinding: 'panel-video-prompt',
                     }
                 })
 
@@ -252,6 +257,8 @@ export const GET = apiHandler(async (request: NextRequest) => {
                             aspectRatio: novelProj.videoRatio || '16:9',
                             resolution: novelProj.imageResolution || '2K'
                         },
+                        panelId: panel.id,
+                        workspaceBinding: 'panel-image-generate',
                         initialOutput: panel.imageUrl ? { image: panel.imageUrl } : null
                     }
                 })
@@ -272,6 +279,8 @@ export const GET = apiHandler(async (request: NextRequest) => {
                             duration: 5,
                             aspectRatio: novelProj.videoRatio || '16:9'
                         },
+                        panelId: panel.id,
+                        workspaceBinding: 'panel-video-generate',
                         initialOutput: panel.videoUrl ? { video: panel.videoUrl } : null
                     }
                 })

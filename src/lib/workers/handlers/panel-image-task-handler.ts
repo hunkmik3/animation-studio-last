@@ -168,7 +168,12 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
 
   const candidateCount = clampCount(payload.candidateCount ?? payload.count, 1, 4, 1)
   const refs = await collectPanelReferenceImages(projectData, panel)
-  const normalizedRefs = await normalizeReferenceImagesForGeneration(refs)
+  let normalizedRefs: string[] = []
+  try {
+    normalizedRefs = await normalizeReferenceImagesForGeneration(refs)
+  } catch {
+    // Graceful degradation: proceed without reference images when files are missing
+  }
 
   const logger = createScopedLogger({
     module: 'worker.panel-image',
@@ -197,33 +202,44 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
   const artStyle = getArtStylePrompt(modelConfig.artStyle, job.data.locale)
   if (!projectData.videoRatio) throw new Error('Project videoRatio not configured')
   const aspectRatio = projectData.videoRatio
-  const promptContext = buildPanelPromptContext({
-    panel: {
-      id: panel.id,
-      shotType: panel.shotType,
-      cameraMove: panel.cameraMove,
-      description: panel.description,
-      videoPrompt: panel.videoPrompt,
-      location: panel.location,
-      characters: panel.characters,
-      srtSegment: panel.srtSegment,
-      photographyRules: panel.photographyRules,
-      actingNotes: panel.actingNotes,
-    },
-    projectData,
-  })
-  const contextJson = JSON.stringify(promptContext, null, 2)
-  const prompt = buildPanelPrompt({
-    locale: job.data.locale,
-    aspectRatio,
-    styleText: artStyle || '与参考图风格一致',
-    sourceText: panel.srtSegment || panel.description || '',
-    contextJson,
-  })
+
+  const customPrompt = typeof payload.customPrompt === 'string' && payload.customPrompt.trim()
+    ? payload.customPrompt.trim()
+    : null
+
+  let prompt: string
+  if (customPrompt) {
+    prompt = customPrompt
+  } else {
+    const promptContext = buildPanelPromptContext({
+      panel: {
+        id: panel.id,
+        shotType: panel.shotType,
+        cameraMove: panel.cameraMove,
+        description: panel.description,
+        videoPrompt: panel.videoPrompt,
+        location: panel.location,
+        characters: panel.characters,
+        srtSegment: panel.srtSegment,
+        photographyRules: panel.photographyRules,
+        actingNotes: panel.actingNotes,
+      },
+      projectData,
+    })
+    const contextJson = JSON.stringify(promptContext, null, 2)
+    prompt = buildPanelPrompt({
+      locale: job.data.locale,
+      aspectRatio,
+      styleText: artStyle || '与参考图风格一致',
+      sourceText: panel.srtSegment || panel.description || '',
+      contextJson,
+    })
+  }
   logger.info({
     message: 'panel image prompt resolved',
     details: {
       promptLength: prompt.length,
+      isCustomPrompt: !!customPrompt,
     },
   })
 
@@ -275,5 +291,6 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
     panelId: panel.id,
     candidateCount: candidates.length,
     imageUrl: isFirstGeneration ? candidates[0] || null : null,
+    usedPrompt: prompt,
   }
 }

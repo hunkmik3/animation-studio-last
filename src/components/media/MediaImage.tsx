@@ -2,6 +2,7 @@
 
 import Image from 'next/image'
 import type { CSSProperties, ImgHTMLAttributes, MouseEventHandler } from 'react'
+import { toDisplayImageUrl } from '@/lib/media/image-url'
 
 export type MediaImageProps = {
   src: string | null | undefined
@@ -21,7 +22,7 @@ function isStableMediaRoute(src: string) {
 }
 
 export function MediaImage({
-  src,
+  src: rawSrc,
   alt,
   className,
   style,
@@ -33,6 +34,7 @@ export function MediaImage({
   priority = false,
   ...imgProps
 }: MediaImageProps) {
+  const src = toDisplayImageUrl(rawSrc)
   if (!src) return null
 
   if (isStableMediaRoute(src)) {
@@ -42,6 +44,7 @@ export function MediaImage({
           src={src}
           alt={alt}
           fill
+          unoptimized
           sizes={sizes || '100vw'}
           priority={priority}
           className={className}
@@ -58,6 +61,7 @@ export function MediaImage({
         alt={alt}
         width={width}
         height={height}
+        unoptimized
         sizes={sizes}
         priority={priority}
         className={className}

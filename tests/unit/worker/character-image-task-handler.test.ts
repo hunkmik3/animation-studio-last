@@ -98,13 +98,13 @@ describe('worker character-image-task-handler behavior', () => {
       imageUrl: 'cos/character-generated-0.png',
     })
 
-    const generationInput = sharedMock.generateLabeledImageToCos.mock.calls[0]?.[0] as {
+    const generationInput = (sharedMock.generateLabeledImageToCos.mock.calls[0] as unknown[])?.[0] as {
       prompt: string
       options?: { referenceImages?: string[]; aspectRatio?: string }
-    }
+    } | undefined
 
-    expect(generationInput.prompt).toContain(CHARACTER_PROMPT_SUFFIX)
-    expect(generationInput.options).toEqual(expect.objectContaining({
+    expect(generationInput!.prompt).toContain(CHARACTER_PROMPT_SUFFIX)
+    expect(generationInput!.options).toEqual(expect.objectContaining({
       referenceImages: ['normalized-primary-ref'],
       aspectRatio: '3:2',
     }))

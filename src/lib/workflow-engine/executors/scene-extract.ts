@@ -1,36 +1,44 @@
 import { chatCompletion } from '@/lib/llm/chat-completion'
 import type { NodeExecutor } from './types'
-import { extractJSON } from './types'
+import {
+  normalizeScenes,
+  parseSceneExtractionResponse,
+  resolveScenePrompt,
+  type ExtractionPromptMode,
+} from './extraction-bridge'
 
 /**
- * Scene / Location Extract executor.
+ * Scene / Location Extract executor — NEAR PARITY BRIDGE.
  *
- * Extracts scenes and locations from input text using LLM.
+ * Uses production-grade extraction assets by default:
+ * - Prompt template: NP_SELECT_LOCATION
+ * - Robust JSON parsing fallbacks
+ * - Invalid-location filtering and dedupe
+ * - Location description normalization
  *
- * ## Production parity notes
- *
- * The original pipeline uses `handleAnalyzeNovelTask` which runs location
- * extraction in parallel with character extraction using:
- * 1. i18n prompt template (PROMPT_IDS.NP_SELECT_LOCATION)
- * 2. executeAiTextStep with streaming callbacks
- * 3. Persists NovelPromotionLocation + LocationImage records to DB
- * 4. Filters out invalid/abstract locations (幻想, 抽象, etc.)
- * 5. Dedup against existing project library
- *
- * This workflow executor:
- * - Uses the SAME chatCompletion() LLM infrastructure
- * - Returns structured data for downstream nodes (no DB persistence)
- * - User can customize the extraction prompt
- *
- * Current status: TEMPORARY SIMPLIFIED — default prompt is simpler
- * than the production i18n template. Same upgrade path as character-extract.
+ * Remaining gap vs worker path:
+ * - No DB-backed location/image persistence inside this executor
+ * - No worker progress callbacks; workflow executes via route call
  */
+function toMaxItems(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  const rounded = Math.round(value)
+  if (rounded < 1) return 1
+  return rounded
+}
+
+function parityNoteForPromptMode(mode: ExtractionPromptMode): string {
+  if (mode === 'custom-override') {
+    return 'Custom prompt override enabled. Filtering/normalization/dedupe still use production-grade bridge helpers, but extraction quality may diverge from the production template.'
+  }
+  return 'Near parity bridge: uses production prompt template (NP_SELECT_LOCATION), production invalid-location filtering, location description normalization, and alias-aware dedupe. Remaining gap vs worker path: no DB-backed location persistence/images creation.'
+}
+
 export const executeSceneExtract: NodeExecutor = async (ctx) => {
   const inputText = (ctx.inputs.text as string) || ''
-
-  if (!inputText) {
+  if (!inputText.trim()) {
     return {
-      outputs: { scenes: [], summary: 'No text input provided' },
+      outputs: { scenes: [], locations: [], summary: 'No text input provided' },
     }
   }
 
@@ -39,40 +47,60 @@ export const executeSceneExtract: NodeExecutor = async (ctx) => {
     throw new Error('No AI model configured. Set a model in node settings or project config.')
   }
 
-  const promptTemplate = (ctx.config.prompt as string) ||
-    `Extract all scenes and locations from the following text. For each location provide a JSON object with these fields:
-- name (string): location name
-- description (string): detailed visual description of the location
-- atmosphere (string): mood, lighting, weather
-- time_of_day (string): if mentioned (dawn/day/dusk/night)
-- interior_exterior (string): "interior" or "exterior"
-- key_objects (string[]): notable objects or landmarks in the scene
+  const promptResolution = resolveScenePrompt({
+    locale: ctx.locale,
+    inputText,
+    promptOverride: ctx.config.prompt,
+    configLocationsLibInfo: ctx.config.locationsLibInfo,
+    inputScenes: ctx.inputs.scenes,
+  })
+  const temperature = typeof ctx.config.temperature === 'number' ? ctx.config.temperature : 0.7
+  const maxScenes = toMaxItems(ctx.config.maxScenes, 30)
 
-Text:
-{input}
+  const completion = await chatCompletion(
+    ctx.userId,
+    model,
+    [
+      { role: 'system', content: 'You are a location asset extraction specialist. Return strict JSON only.' },
+      { role: 'user', content: promptResolution.prompt },
+    ],
+    {
+      temperature,
+      projectId: ctx.projectId,
+      action: 'workflow_scene_extract',
+      reasoning: false,
+    },
+  )
 
-IMPORTANT: Output ONLY a valid JSON array of scene objects. No other text.`
+  const responseText = completion.choices[0]?.message?.content || '{}'
+  const parsed = parseSceneExtractionResponse(responseText)
+  const normalizedScenes = normalizeScenes(parsed.rawLocations)
 
-  const userPrompt = promptTemplate.replace('{input}', inputText)
+  const warnings = [...parsed.warnings]
+  if (promptResolution.usedLegacyDefaultPrompt) {
+    warnings.push('Legacy scene prompt override matched old default and was auto-upgraded to production template.')
+  }
 
-  const completion = await chatCompletion(ctx.userId, model, [
-    { role: 'system', content: 'You are an expert story analyst specializing in setting and location analysis. Always respond with valid JSON.' },
-    { role: 'user', content: userPrompt },
-  ], { temperature: 0.3, projectId: ctx.projectId, reasoning: false })
-
-  const text = completion.choices[0]?.message?.content || '[]'
-  const parsed = extractJSON(text)
-  const scenes = Array.isArray(parsed) ? parsed : []
+  const scenes = normalizedScenes.slice(0, maxScenes)
+  if (normalizedScenes.length > scenes.length) {
+    warnings.push(`Trimmed extracted scenes to maxScenes=${maxScenes}.`)
+  }
 
   return {
     outputs: {
       scenes,
+      locations: scenes,
       summary: `Extracted ${scenes.length} scenes`,
+      warnings,
     },
     temporaryImplementation: true,
-    parityNotes: 'Default prompt is simpler than production i18n template (NP_SELECT_LOCATION). ' +
-      'Production version also persists LocationImage records with multiple descriptions per location. ' +
-      'Future: offer production prompt as preset.',
-    metadata: { model, sceneCount: scenes.length },
+    parityNotes: parityNoteForPromptMode(promptResolution.promptMode),
+    metadata: {
+      model,
+      promptMode: promptResolution.promptMode,
+      parseMode: parsed.parseMode,
+      sceneCount: scenes.length,
+      warningCount: warnings.length,
+    },
   }
 }

@@ -22,11 +22,7 @@ import type { NodeExecutor } from './types'
  */
 export const executeVideoGenerate: NodeExecutor = async (ctx) => {
   if (!ctx.panelId) {
-    return {
-      outputs: {},
-      mock: true,
-      message: 'Video generation requires a linked panel with an image. Use "Pull from Workspace" to link nodes.',
-    }
+    throw new Error('Video generation requires a linked panel with an image. Use "Pull from Workspace" to link nodes.')
   }
 
   const panel = await prisma.novelPromotionPanel.findUnique({

@@ -127,7 +127,7 @@ function buildJob(payload: Record<string, unknown>, type: TaskType): Job<TaskJob
 }
 
 function readGenerateCall(index: number) {
-  const call = generatorApiMock.generateImage.mock.calls[index]
+  const call = (generatorApiMock.generateImage.mock.calls as unknown as unknown[][])[index]
   if (!call) {
     return {
       prompt: '',
@@ -202,7 +202,7 @@ describe('worker reference-to-character', () => {
     expect(options.referenceImages).toEqual(['https://example.com/ref-a.png', 'https://example.com/ref-b.png'])
     expect(options.aspectRatio).toBe(CHARACTER_IMAGE_BANANA_RATIO)
 
-    const updateArg = prismaMock.globalCharacterAppearance.update.mock.calls[0]?.[0] as {
+    const updateArg = ((prismaMock.globalCharacterAppearance.update.mock.calls as unknown as unknown[][])[0])?.[0] as {
       data?: Record<string, unknown>
       where?: Record<string, unknown>
     } | undefined

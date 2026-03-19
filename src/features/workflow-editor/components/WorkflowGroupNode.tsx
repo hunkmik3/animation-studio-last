@@ -1,6 +1,6 @@
 import { memo, useCallback } from 'react'
-import { Position, type NodeProps } from '@xyflow/react'
-import { ChevronDown, ChevronRight, LayoutGrid } from 'lucide-react'
+import { type NodeProps } from '@xyflow/react'
+import { AppIcon } from '@/components/ui/icons'
 import { useWorkflowStore } from '../useWorkflowStore'
 
 function WorkflowGroupNodeComponent({ id, data, selected }: NodeProps) {
@@ -31,7 +31,7 @@ function WorkflowGroupNodeComponent({ id, data, selected }: NodeProps) {
                 onClick={handleToggle}
             >
                 <div className="flex items-center gap-2 pointer-events-none">
-                    <LayoutGrid className="w-4 h-4 text-indigo-400" />
+                    <AppIcon name="layoutGrid" className="w-4 h-4 text-indigo-400" />
                     <span className="text-sm font-semibold tracking-wide text-slate-200">
                         {label || 'Group'}
                     </span>
@@ -40,7 +40,7 @@ function WorkflowGroupNodeComponent({ id, data, selected }: NodeProps) {
                     className="p-1 hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-slate-200"
                     onClick={handleToggle}
                 >
-                    {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    {isCollapsed ? <AppIcon name="chevronRight" className="w-4 h-4" /> : <AppIcon name="chevronDown" className="w-4 h-4" />}
                 </button>
             </div>
 

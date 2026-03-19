@@ -24,6 +24,57 @@ function toStructuredJsonField(value: unknown, fieldName: string): string | null
 }
 
 /**
+ * GET /api/novel-promotion/[projectId]/panel?panelId=...
+ * 获取单个 Panel（工作流监控用于同步真实 media output）
+ */
+export const GET = apiHandler(async (
+  request: NextRequest,
+  context: { params: Promise<{ projectId: string }> }
+) => {
+  const { projectId } = await context.params
+
+  const authResult = await requireProjectAuthLight(projectId)
+  if (isErrorResponse(authResult)) return authResult
+
+  const { searchParams } = new URL(request.url)
+  const panelId = searchParams.get('panelId')
+  if (!panelId) {
+    throw new ApiError('INVALID_PARAMS', { message: 'panelId is required' })
+  }
+
+  const panel = await prisma.novelPromotionPanel.findFirst({
+    where: {
+      id: panelId,
+      storyboard: {
+        episode: {
+          novelPromotionProject: {
+            projectId,
+          }
+        }
+      }
+    },
+    select: {
+      id: true,
+      imageUrl: true,
+      videoUrl: true,
+    }
+  })
+
+  if (!panel) {
+    throw new ApiError('NOT_FOUND')
+  }
+
+  return NextResponse.json({
+    success: true,
+    panel: {
+      id: panel.id,
+      imageUrl: panel.imageUrl,
+      videoUrl: panel.videoUrl,
+    }
+  })
+})
+
+/**
  * POST /api/novel-promotion/[projectId]/panel
  * 新增一个 Panel
  */

@@ -82,7 +82,12 @@ export async function handleModifyAssetImageTask(job: Job<TaskJobData>) {
         }
       }
     }
-    const normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    let normalizedExtras: string[] = []
+    try {
+      normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    } catch {
+      // Graceful degradation: proceed without extra reference images
+    }
     const referenceImages = Array.from(new Set([requiredReference, ...normalizedExtras]))
 
     const prompt = `请根据以下指令修改图片，保持人物核心特征一致：\n${modifyPrompt}`
@@ -178,7 +183,12 @@ export async function handleModifyAssetImageTask(job: Job<TaskJobData>) {
         }
       }
     }
-    const normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    let normalizedExtras: string[] = []
+    try {
+      normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    } catch {
+      // Graceful degradation: proceed without extra reference images
+    }
     const referenceImages = Array.from(new Set([requiredReference, ...normalizedExtras]))
 
     const prompt = `请根据以下指令修改场景图片，保持整体风格一致：\n${modifyPrompt}`
@@ -273,7 +283,12 @@ export async function handleModifyAssetImageTask(job: Job<TaskJobData>) {
       }
     }
 
-    const normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    let normalizedExtras: string[] = []
+    try {
+      normalizedExtras = await normalizeReferenceImagesForGeneration(extraReferenceInputs)
+    } catch {
+      // Graceful degradation: proceed without extra reference images
+    }
     const uniqueReferences = Array.from(new Set([requiredReference, ...normalizedExtras]))
     const prompt = `请根据以下指令修改分镜图片，保持镜头语言和主体一致：\n${modifyPrompt}`
     const source = await resolveImageSourceFromGeneration(job, {

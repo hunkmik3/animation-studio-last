@@ -18,18 +18,17 @@ import {
     Zap, LayoutTemplate, Workflow,
     CheckCircle2, AlertCircle, UploadCloud, RotateCcw
 } from 'lucide-react'
+import { collectWorkflowExecutionContextIssues } from '@/features/workflow-editor/workspace-boundary'
 
 // Pre-built classic pipeline template
 const CLASSIC_PIPELINE_TEMPLATE = {
     nodes: [
         { id: 'n1', type: 'workflowNode', position: { x: 50, y: 250 }, data: { nodeType: 'text-input', label: 'Novel / Script', config: { content: '' } } },
-        { id: 'n2', type: 'workflowNode', position: { x: 350, y: 100 }, data: { nodeType: 'character-extract', label: 'Extract Characters', config: { prompt: 'Analyze the following text and extract all characters with their name, age, gender, appearance, and personality.\n\nText:\n{input}', model: '', maxCharacters: 20 } } },
-        { id: 'n3', type: 'workflowNode', position: { x: 350, y: 400 }, data: { nodeType: 'scene-extract', label: 'Extract Scenes', config: { prompt: 'Analyze the following text and extract all scenes/locations with name, description, atmosphere.\n\nText:\n{input}', model: '' } } },
+        { id: 'n2', type: 'workflowNode', position: { x: 350, y: 100 }, data: { nodeType: 'character-extract', label: 'Extract Characters', config: { prompt: '', model: '', maxCharacters: 20 } } },
+        { id: 'n3', type: 'workflowNode', position: { x: 350, y: 400 }, data: { nodeType: 'scene-extract', label: 'Extract Scenes', config: { prompt: '', model: '', maxScenes: 30 } } },
         { id: 'n4', type: 'workflowNode', position: { x: 700, y: 250 }, data: { nodeType: 'storyboard', label: 'Storyboard', config: { prompt: 'Create a storyboard from the script with panel descriptions, shot types, and camera moves.\n\nScript: {input}\nCharacters: {characters}\nScenes: {scenes}', model: '', panelCount: 10, style: 'anime' } } },
         { id: 'n5', type: 'workflowNode', position: { x: 1050, y: 150 }, data: { nodeType: 'image-generate', label: 'Generate Images', config: { provider: 'flux', model: '', negativePrompt: '', aspectRatio: '16:9', resolution: '2K' } } },
-        { id: 'n6', type: 'workflowNode', position: { x: 1050, y: 400 }, data: { nodeType: 'voice-synthesis', label: 'Voice Over', config: { provider: 'cosyvoice', voice: '', speed: 1.0 } } },
         { id: 'n7', type: 'workflowNode', position: { x: 1400, y: 250 }, data: { nodeType: 'video-generate', label: 'Generate Video', config: { provider: 'kling', model: '', duration: 5, aspectRatio: '16:9' } } },
-        { id: 'n8', type: 'workflowNode', position: { x: 1750, y: 250 }, data: { nodeType: 'output', label: 'Final Output', config: { label: 'Anime Video', autoDownload: false } } },
     ],
     edges: [
         { id: 'e1', source: 'n1', sourceHandle: 'text', target: 'n2', targetHandle: 'text', animated: true, style: { strokeWidth: 2 } },
@@ -38,9 +37,7 @@ const CLASSIC_PIPELINE_TEMPLATE = {
         { id: 'e4', source: 'n2', sourceHandle: 'characters', target: 'n4', targetHandle: 'characters', animated: true, style: { strokeWidth: 2 } },
         { id: 'e5', source: 'n3', sourceHandle: 'scenes', target: 'n4', targetHandle: 'scenes', animated: true, style: { strokeWidth: 2 } },
         { id: 'e6', source: 'n4', sourceHandle: 'panels', target: 'n5', targetHandle: 'prompt', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e7', source: 'n4', sourceHandle: 'panels', target: 'n6', targetHandle: 'text', animated: true, style: { strokeWidth: 2 } },
         { id: 'e8', source: 'n5', sourceHandle: 'image', target: 'n7', targetHandle: 'image', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e9', source: 'n7', sourceHandle: 'video', target: 'n8', targetHandle: 'content', animated: true, style: { strokeWidth: 2 } },
     ],
 }
 
@@ -51,11 +48,15 @@ export function WorkflowToolbar() {
     const loadFromJSON = useWorkflowStore((s) => s.loadFromJSON)
     const toJSON = useWorkflowStore((s) => s.toJSON)
     const executionStatus = useWorkflowStore((s) => s.executionStatus)
-    const resetExecution = useWorkflowStore((s) => s.resetExecution)
     const executeWorkflow = useWorkflowStore((s) => s.executeWorkflow)
+    const resumeRecoverableContinuation = useWorkflowStore((s) => s.resumeRecoverableContinuation)
     const forceRerunAll = useWorkflowStore((s) => s.forceRerunAll)
     const persistedOutputs = useWorkflowStore((s) => s.persistedOutputs)
+    const recoverableContinuation = useWorkflowStore((s) => s.recoverableContinuation)
+    const continuationRecovery = useWorkflowStore((s) => s.continuationRecovery)
     const nodes = useWorkflowStore((s) => s.nodes)
+    const nodeOutputs = useWorkflowStore((s) => s.nodeOutputs)
+    const nodeExecutionStates = useWorkflowStore((s) => s.nodeExecutionStates)
     const [showTemplates, setShowTemplates] = useState(false)
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -138,15 +139,31 @@ export function WorkflowToolbar() {
     // ── Execute workflow with real data flow (resume: skips cached nodes) ──
     const handleRun = useCallback(async () => {
         if (nodes.length === 0) return
+        const contextIssues = collectWorkflowExecutionContextIssues(nodes)
+        if (contextIssues.length > 0) {
+            const summary = contextIssues
+                .slice(0, 3)
+                .map((item) => `${item.label}: ${item.missing.join('+')}`)
+                .join(', ')
+            showToast(`Missing required workspace context: ${summary}`, 'error')
+            return
+        }
         try {
             await executeWorkflow()
             const finalStatus = useWorkflowStore.getState().executionStatus
+            if (finalStatus === 'running') {
+                showToast('Workflow is waiting on async tasks. It will continue automatically when outputs are ready.', 'success')
+                return
+            }
             showToast(
                 finalStatus === 'completed' ? '✅ Workflow completed!' : '⚠️ Some nodes failed — check node details',
                 finalStatus === 'completed' ? 'success' : 'error',
             )
-        } catch {
-            showToast('Workflow execution failed', 'error')
+        } catch (error) {
+            const message = error instanceof Error && error.message.trim().length > 0
+                ? error.message
+                : 'Workflow execution failed'
+            showToast(message, 'error')
         }
     }, [nodes, executeWorkflow, showToast])
 
@@ -156,14 +173,41 @@ export function WorkflowToolbar() {
         try {
             await forceRerunAll()
             const finalStatus = useWorkflowStore.getState().executionStatus
+            if (finalStatus === 'running') {
+                showToast('Workflow is waiting on async tasks after full rerun. It will continue automatically.', 'success')
+                return
+            }
             showToast(
                 finalStatus === 'completed' ? '✅ Full re-run completed!' : '⚠️ Some nodes failed',
                 finalStatus === 'completed' ? 'success' : 'error',
             )
-        } catch {
-            showToast('Force re-run failed', 'error')
+        } catch (error) {
+            const message = error instanceof Error && error.message.trim().length > 0
+                ? error.message
+                : 'Force re-run failed'
+            showToast(message, 'error')
         }
     }, [nodes, forceRerunAll, showToast])
+
+    const handleResumeRecoveredContinuation = useCallback(async () => {
+        if (!recoverableContinuation || continuationRecovery.status !== 'ready') return
+        try {
+            await resumeRecoverableContinuation()
+            const finalStatus = useWorkflowStore.getState().executionStatus
+            if (finalStatus === 'running') {
+                showToast('Resumed workflow. Waiting on remaining async tasks if any.', 'success')
+                return
+            }
+            showToast(
+                finalStatus === 'completed'
+                    ? '✅ Workflow completed after resume!'
+                    : '⚠️ Resume finished with failures — check node details',
+                finalStatus === 'completed' ? 'success' : 'error',
+            )
+        } catch {
+            showToast('Failed to resume paused workflow', 'error')
+        }
+    }, [continuationRecovery.status, recoverableContinuation, resumeRecoverableContinuation, showToast])
 
     const handleLoadTemplate = useCallback(() => {
         loadFromJSON(CLASSIC_PIPELINE_TEMPLATE)
@@ -197,11 +241,33 @@ export function WorkflowToolbar() {
             showToast('No Project ID provided to push to', 'error')
             return
         }
+        if (executionStatus === 'running') {
+            showToast('Workflow is currently running. Wait for completion/pause before pushing to workspace.', 'error')
+            return
+        }
+        const confirmed = window.confirm(
+            'Push to Workspace will apply panel prompt edits and merge extracted character/location data into project state. Continue?',
+        )
+        if (!confirmed) return
         try {
             showToast('Pushing updates to workspace...', 'success')
-            const res = await pushWorkflowToProject(projectId, nodes)
+            const res = await pushWorkflowToProject(projectId, nodes, nodeOutputs, nodeExecutionStates)
             if (res.success) {
-                showToast(`Successfully updated ${res.updatedCount || 0} panels in workspace!`, 'success')
+                const characterUpdates = (res.assetMerge?.characters?.created || 0) + (res.assetMerge?.characters?.updated || 0)
+                const locationUpdates = (res.assetMerge?.locations?.created || 0) + (res.assetMerge?.locations?.updated || 0)
+                const panelPromptSummary = res.panelPromptUpdatesSkipped > 0
+                    ? `${res.panelPromptUpdates}/${res.panelPromptUpdatesRequested}`
+                    : `${res.panelPromptUpdates}`
+                const warningSuffix = res.warnings && res.warnings.length > 0
+                    ? ` • ${res.warnings.length} context warning(s)`
+                    : ''
+                showToast(
+                    `Synced panels ${panelPromptSummary}, characters ${characterUpdates}, locations ${locationUpdates}${warningSuffix}`,
+                    'success',
+                )
+                if (res.warnings && res.warnings.length > 0) {
+                    console.warn('[WorkflowPushWarnings]', res.warnings)
+                }
             } else {
                 showToast(res.message || 'No updates required', 'success')
             }
@@ -209,7 +275,7 @@ export function WorkflowToolbar() {
             console.error(err)
             showToast('Failed to push to workspace', 'error')
         }
-    }, [projectId, nodes, showToast])
+    }, [executionStatus, projectId, nodes, nodeOutputs, nodeExecutionStates, showToast])
 
     return (
         <>
@@ -236,6 +302,29 @@ export function WorkflowToolbar() {
                             Synced
                         </span>
                     )}
+                    {projectId && (
+                        <span className="text-[10px] text-sky-300 bg-sky-500/15 px-2 py-0.5 rounded-full">
+                            Parallel mode: Workflow + Workspace
+                        </span>
+                    )}
+                    {recoverableContinuation && continuationRecovery.status === 'waiting' && (
+                        <span className="text-[10px] text-sky-300 bg-sky-500/15 px-2 py-0.5 rounded-full">
+                            Async paused (recoverable)
+                        </span>
+                    )}
+                    {recoverableContinuation && continuationRecovery.status === 'ready' && (
+                        <span className="text-[10px] text-emerald-300 bg-emerald-500/15 px-2 py-0.5 rounded-full">
+                            Ready to resume
+                        </span>
+                    )}
+                    {continuationRecovery.status === 'stale' && (
+                        <span
+                            className="text-[10px] text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded-full"
+                            title={continuationRecovery.reason || 'Saved continuation became stale.'}
+                        >
+                            Stale continuation
+                        </span>
+                    )}
                 </div>
 
                 {/* Right — actions */}
@@ -246,7 +335,7 @@ export function WorkflowToolbar() {
                             <button
                                 onClick={handleSyncProject}
                                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 transition-colors border border-indigo-500/30"
-                                title="Pull workflow from current project storyboard"
+                                title="Pull a workspace-linked workflow graph from current project data"
                             >
                                 <Zap className="w-3.5 h-3.5" />
                                 Pull from Workspace
@@ -254,7 +343,7 @@ export function WorkflowToolbar() {
                             <button
                                 onClick={handlePushToProject}
                                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 transition-colors border border-emerald-500/30"
-                                title="Push prompt edits back to project storyboard"
+                                title="Apply workflow prompt/asset updates into workspace project state"
                             >
                                 <UploadCloud className="w-3.5 h-3.5" />
                                 Push to Workspace
@@ -345,6 +434,23 @@ export function WorkflowToolbar() {
                     </button>
 
                     <div className="w-px h-6 bg-slate-700 mx-1" />
+
+                    {recoverableContinuation && continuationRecovery.status === 'ready' && executionStatus !== 'running' && (
+                        <button
+                            onClick={handleResumeRecoveredContinuation}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-200 transition-colors border border-emerald-500/30"
+                            title="Safely continue the paused async workflow run"
+                        >
+                            <Play className="w-3.5 h-3.5" />
+                            Resume Paused Run
+                        </button>
+                    )}
+
+                    {recoverableContinuation && continuationRecovery.status === 'waiting' && executionStatus !== 'running' && (
+                        <span className="px-3 py-1.5 text-[11px] rounded-lg bg-sky-600/15 text-sky-200 border border-sky-500/20">
+                            Waiting for async task output...
+                        </span>
+                    )}
 
                     {/* Run (with resume) */}
                     <button

@@ -193,19 +193,56 @@ function adaptCharacters(raw: unknown): CharacterAsset[] {
     .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
     .map(item => {
       const name = String(item.name || item.characterName || 'Unknown')
-      // Build appearance description from available fields
+      const aliases = toStringArray(item.aliases)
+      const personalityTags = toStringArray(item.personality_tags)
+      const visualKeywords = toStringArray(item.visual_keywords)
       const descParts: string[] = []
+      if (item.introduction) descParts.push(String(item.introduction))
       if (item.appearance) descParts.push(String(item.appearance))
-      if (item.age) descParts.push(`Age: ${item.age}`)
-      if (item.gender) descParts.push(`Gender: ${item.gender}`)
-      if (item.personality) descParts.push(`Personality: ${item.personality}`)
-      const description = descParts.join('. ') || null
+      if (item.primary_identifier) descParts.push(`Identifier: ${String(item.primary_identifier)}`)
+      if (visualKeywords.length > 0) descParts.push(`Visual keywords: ${visualKeywords.join(', ')}`)
+      if (item.age_range || item.age) descParts.push(`Age: ${String(item.age_range || item.age)}`)
+      if (item.gender) descParts.push(`Gender: ${String(item.gender)}`)
+      if (personalityTags.length > 0) descParts.push(`Personality: ${personalityTags.join(', ')}`)
+      if (item.personality && personalityTags.length === 0) descParts.push(`Personality: ${String(item.personality)}`)
+      if (aliases.length > 0) descParts.push(`Aliases: ${aliases.join(', ')}`)
+      const fallbackDescription = descParts.join('. ') || null
+
+      const expectedAppearances = Array.isArray(item.expected_appearances)
+        ? item.expected_appearances
+            .filter((appearance): appearance is Record<string, unknown> =>
+              typeof appearance === 'object' && appearance !== null,
+            )
+            .map((appearance, index) => {
+              const changeReason = String(
+                appearance.change_reason ||
+                appearance.changeReason ||
+                `Appearance ${index + 1}`,
+              )
+              const appearanceDescription = String(
+                appearance.description ||
+                appearance.descriptions ||
+                fallbackDescription ||
+                '',
+              )
+              return {
+                changeReason,
+                description: appearanceDescription || null,
+                descriptions: null,
+                selectedIndex: null,
+              }
+            })
+        : []
+
+      const appearances = expectedAppearances.length > 0
+        ? expectedAppearances
+        : (fallbackDescription
+            ? [{ changeReason: null, description: fallbackDescription, descriptions: null, selectedIndex: null }]
+            : [])
 
       return {
         name,
-        appearances: description
-          ? [{ changeReason: null, description, descriptions: null, selectedIndex: null }]
-          : [],
+        appearances,
       }
     })
 }
@@ -228,18 +265,36 @@ function adaptLocations(raw: unknown): LocationAsset[] {
     .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
     .map(item => {
       const name = String(item.name || item.locationName || 'Unknown')
+      const descriptions = toStringArray(item.descriptions)
+      const firstDescription = descriptions[0] || (item.description ? String(item.description) : '')
       const descParts: string[] = []
-      if (item.description) descParts.push(String(item.description))
-      if (item.atmosphere) descParts.push(`Atmosphere: ${item.atmosphere}`)
+      if (firstDescription) descParts.push(firstDescription)
+      if (item.summary) descParts.push(`Summary: ${String(item.summary)}`)
+      if (item.atmosphere) descParts.push(`Atmosphere: ${String(item.atmosphere)}`)
+      if (item.time_of_day) descParts.push(`Time: ${String(item.time_of_day)}`)
+      if (item.interior_exterior) descParts.push(`Space: ${String(item.interior_exterior)}`)
+      if (item.has_crowd) descParts.push('Crowd scene')
+      if (item.crowd_description) descParts.push(`Crowd: ${String(item.crowd_description)}`)
       const description = descParts.join('. ') || null
+      const images = descriptions.length > 0
+        ? descriptions.map((desc, index) => ({
+            isSelected: index === 0,
+            description: desc,
+          }))
+        : (description ? [{ isSelected: true, description }] : [])
 
       return {
         name,
-        images: description
-          ? [{ isSelected: true, description }]
-          : [],
+        images,
       }
     })
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
 }
 
 function parseJsonSafe(value: unknown): unknown {
