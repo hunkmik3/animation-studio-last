@@ -267,12 +267,15 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
   }
 
   const isFirstGeneration = !panel.imageUrl
+  const autoConfirm = payload.autoConfirm === true
 
   await assertTaskActive(job, 'persist_panel_image')
-  if (isFirstGeneration) {
+  if (isFirstGeneration || autoConfirm) {
+    // First generation OR workflow auto-confirm: update imageUrl immediately
     await prisma.novelPromotionPanel.update({
       where: { id: panel.id },
       data: {
+        ...(panel.imageUrl ? { previousImageUrl: panel.imageUrl } : {}),
         imageUrl: candidates[0] || null,
         candidateImages: candidateCount > 1 ? JSON.stringify(candidates) : null,
       },
@@ -290,7 +293,7 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
   return {
     panelId: panel.id,
     candidateCount: candidates.length,
-    imageUrl: isFirstGeneration ? candidates[0] || null : null,
+    imageUrl: (isFirstGeneration || autoConfirm) ? candidates[0] || null : null,
     usedPrompt: prompt,
   }
 }
