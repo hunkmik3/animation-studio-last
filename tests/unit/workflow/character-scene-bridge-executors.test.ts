@@ -17,7 +17,7 @@ function createBaseContext(overrides?: Partial<NodeExecutorContext>): NodeExecut
     projectId: 'project_1',
     userId: 'user_1',
     locale: 'en',
-    projectModelConfig: {
+    modelConfig: {
       analysisModel: 'google/gemini-3-pro-preview',
       characterModel: null,
       locationModel: null,

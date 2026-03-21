@@ -59,6 +59,7 @@ export type ScriptToStoryboardOrchestratorInput = {
     locations: LocationAsset[]
   }
   promptTemplates: ScriptToStoryboardPromptTemplates
+  styleDirective?: string
   runStep: (
     meta: ScriptToStoryboardStepMeta,
     prompt: string,
@@ -261,7 +262,7 @@ async function runStepWithRetry<T>(
 export async function runScriptToStoryboardOrchestrator(
   input: ScriptToStoryboardOrchestratorInput,
 ): Promise<ScriptToStoryboardOrchestratorResult> {
-  const { clips, novelPromotionData, promptTemplates, runStep } = input
+  const { clips, novelPromotionData, promptTemplates, runStep, styleDirective } = input
   if (!Array.isArray(clips) || clips.length === 0) {
     throw new Error('No clips found')
   }
@@ -309,6 +310,9 @@ export async function runScriptToStoryboardOrchestrator(
         phase1Prompt = phase1Prompt.replace('{clip_content}', `【剧本格式】\n${JSON.stringify(screenplay, null, 2)}`)
       } else {
         phase1Prompt = phase1Prompt.replace('{clip_content}', effectiveContent)
+      }
+      if (styleDirective && styleDirective.trim().length > 0) {
+        phase1Prompt = `${phase1Prompt}\n\n${styleDirective}`
       }
 
       const phase1Meta = withStepMeta(
@@ -379,16 +383,25 @@ export async function runScriptToStoryboardOrchestrator(
         .replace(/\{panel_count\}/g, String(planPanels.length))
         .replace('{locations_description}', filteredLocationsDescription)
         .replace('{characters_info}', filteredFullDescription)
+      const phase2PromptWithStyle = styleDirective && styleDirective.trim().length > 0
+        ? `${phase2Prompt}\n\n${styleDirective}`
+        : phase2Prompt
 
       const phase2ActingPrompt = promptTemplates.phase2ActingTemplate
         .replace('{panels_json}', JSON.stringify(planPanels, null, 2))
         .replace(/\{panel_count\}/g, String(planPanels.length))
         .replace('{characters_info}', filteredFullDescription)
+      const phase2ActingPromptWithStyle = styleDirective && styleDirective.trim().length > 0
+        ? `${phase2ActingPrompt}\n\n${styleDirective}`
+        : phase2ActingPrompt
 
       const phase3Prompt = promptTemplates.phase3DetailTemplate
         .replace('{panels_json}', JSON.stringify(planPanels, null, 2))
         .replace('{characters_age_gender}', filteredFullDescription)
         .replace('{locations_description}', filteredLocationsDescription)
+      const phase3PromptWithStyle = styleDirective && styleDirective.trim().length > 0
+        ? `${phase3Prompt}\n\n${styleDirective}`
+        : phase3Prompt
 
       const [
         { parsed: photographyRules },
@@ -396,15 +409,15 @@ export async function runScriptToStoryboardOrchestrator(
         { parsed: filteredPhase3Panels },
       ] = await Promise.all([
         runStepWithRetry(
-          runStep, phase2Meta, phase2Prompt, 'storyboard_phase2_cinematography', 2400,
+          runStep, phase2Meta, phase2PromptWithStyle, 'storyboard_phase2_cinematography', 2400,
           (text) => parseJsonArray<PhotographyRule>(text, `phase2:${formatClipId(clip)}`),
         ),
         runStepWithRetry(
-          runStep, phase2ActingMeta, phase2ActingPrompt, 'storyboard_phase2_acting', 2400,
+          runStep, phase2ActingMeta, phase2ActingPromptWithStyle, 'storyboard_phase2_acting', 2400,
           (text) => parseJsonArray<ActingDirection>(text, `phase2-acting:${formatClipId(clip)}`),
         ),
         runStepWithRetry(
-          runStep, phase3Meta, phase3Prompt, 'storyboard_phase3_detail', 2600,
+          runStep, phase3Meta, phase3PromptWithStyle, 'storyboard_phase3_detail', 2600,
           (text) => {
             const panels = parseJsonArray<StoryboardPanel>(text, `phase3:${formatClipId(clip)}`)
             const filtered = panels.filter(

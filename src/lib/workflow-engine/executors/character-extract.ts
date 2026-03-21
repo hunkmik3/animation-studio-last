@@ -42,7 +42,7 @@ export const executeCharacterExtract: NodeExecutor = async (ctx) => {
     }
   }
 
-  const model = (ctx.config.model as string) || ctx.projectModelConfig.analysisModel
+  const model = (ctx.config.model as string) || ctx.modelConfig.analysisModel
   if (!model) {
     throw new Error('No AI model configured. Set a model in node settings or project config.')
   }
@@ -66,7 +66,7 @@ export const executeCharacterExtract: NodeExecutor = async (ctx) => {
     ],
     {
       temperature,
-      projectId: ctx.projectId,
+      projectId: ctx.projectId || undefined,
       action: 'workflow_character_extract',
       reasoning: false,
     },

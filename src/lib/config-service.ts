@@ -117,6 +117,15 @@ export interface UserModelConfig {
   capabilityDefaults: CapabilitySelections
 }
 
+export interface WorkflowExecutionModelConfig {
+  analysisModel: string | null
+  characterModel: string | null
+  locationModel: string | null
+  storyboardModel: string | null
+  editModel: string | null
+  videoModel: string | null
+}
+
 /**
  * 获取项目级模型配置
  */
@@ -220,6 +229,42 @@ export async function getUserModelConfig(userId: string): Promise<UserModelConfi
     videoModel: extractModelKey(userPref?.videoModel) || null,
     capabilityDefaults: parseCapabilitySelections(userPref?.capabilityDefaults),
   }
+}
+
+function toWorkflowExecutionModelConfig(config: {
+  analysisModel: string | null
+  characterModel: string | null
+  locationModel: string | null
+  storyboardModel: string | null
+  editModel: string | null
+  videoModel: string | null
+}): WorkflowExecutionModelConfig {
+  return {
+    analysisModel: config.analysisModel,
+    characterModel: config.characterModel,
+    locationModel: config.locationModel,
+    storyboardModel: config.storyboardModel,
+    editModel: config.editModel,
+    videoModel: config.videoModel,
+  }
+}
+
+export async function getWorkflowExecutionModelConfig(input: {
+  userId: string
+  projectId?: string | null
+}): Promise<WorkflowExecutionModelConfig> {
+  const projectId =
+    typeof input.projectId === 'string' && input.projectId.trim().length > 0
+      ? input.projectId.trim()
+      : null
+
+  if (projectId) {
+    const config = await getProjectModelConfig(projectId, input.userId)
+    return toWorkflowExecutionModelConfig(config)
+  }
+
+  const config = await getUserModelConfig(input.userId)
+  return toWorkflowExecutionModelConfig(config)
 }
 
 export function resolveModelCapabilityGenerationOptions(input: {

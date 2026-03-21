@@ -23,7 +23,7 @@ export const executeLlmPrompt: NodeExecutor = async (ctx) => {
   const inputText = (ctx.inputs.text as string) || ''
   const contextText = ctx.inputs.context ? JSON.stringify(ctx.inputs.context) : ''
 
-  const model = (ctx.config.model as string) || ctx.projectModelConfig.analysisModel
+  const model = (ctx.config.model as string) || ctx.modelConfig.analysisModel
   if (!model) {
     throw new Error('No AI model configured. Set a model in node settings or project config.')
   }
@@ -39,7 +39,7 @@ export const executeLlmPrompt: NodeExecutor = async (ctx) => {
   const completion = await chatCompletion(ctx.userId, model, [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
-  ], { temperature, projectId: ctx.projectId, reasoning: false })
+  ], { temperature, projectId: ctx.projectId || undefined, reasoning: false })
 
   const text = completion.choices[0]?.message?.content || ''
   const outputs: Record<string, unknown> = { result: text }

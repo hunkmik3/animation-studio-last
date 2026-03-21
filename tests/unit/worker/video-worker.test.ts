@@ -1,5 +1,6 @@
 import type { Job } from 'bullmq'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { getArtStylePrompt } from '@/lib/constants'
 import { TASK_TYPE, type TaskJobData } from '@/lib/task/types'
 
 type WorkerProcessor = (job: Job<TaskJobData>) => Promise<unknown>
@@ -176,6 +177,30 @@ describe('worker video processor behavior', () => {
       {
         Authorization: 'Bearer oa-key',
       },
+    )
+  })
+
+  it('VIDEO_PANEL: payload.artStyle 会追加到视频提示词中', async () => {
+    const processor = workerState.processor
+    expect(processor).toBeTruthy()
+
+    const job = buildJob({
+      type: TASK_TYPE.VIDEO_PANEL,
+      payload: {
+        videoModel: 'google::veo-3',
+        artStyle: 'realistic',
+      },
+    })
+
+    await processor!(job)
+
+    expect(utilsMock.resolveVideoSourceFromGeneration).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        options: expect.objectContaining({
+          prompt: `panel prompt，整体视频视觉风格：${getArtStylePrompt('realistic', 'zh')}`,
+        }),
+      }),
     )
   })
 

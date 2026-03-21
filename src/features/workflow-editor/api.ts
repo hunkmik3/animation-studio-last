@@ -6,7 +6,7 @@ import type { NodeExecutionState } from '@/lib/workflow-engine/types'
 import type { WorkflowContinuationMarker } from '@/lib/workflow-engine/continuation'
 import type { WorkflowExecutionCursor, WorkflowExecutionLease } from '@/lib/workflow-engine/execution-authority'
 
-interface WorkflowListItem {
+export interface WorkflowListItem {
     id: string
     name: string
     description: string | null
@@ -17,7 +17,7 @@ interface WorkflowListItem {
     _count: { executions: number }
 }
 
-interface WorkflowDetail {
+export interface WorkflowDetail {
     id: string
     name: string
     description: string | null

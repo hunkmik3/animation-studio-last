@@ -90,10 +90,14 @@ export function NodePalette() {
                                     <div className="mt-1">
                                         <span className={`text-[9px] px-1.5 py-0.5 rounded ${getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
                                             ? 'bg-amber-500/15 text-amber-300'
-                                            : 'bg-emerald-500/15 text-emerald-300'
+                                            : getWorkflowBoundaryDescriptor(def.type).kind === 'hybrid'
+                                                ? 'bg-sky-500/15 text-sky-300'
+                                                : 'bg-emerald-500/15 text-emerald-300'
                                             }`}>
                                             {getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
                                                 ? 'Workspace Context'
+                                                : getWorkflowBoundaryDescriptor(def.type).kind === 'hybrid'
+                                                    ? 'Hybrid'
                                                 : 'Workflow Native'}
                                         </span>
                                     </div>
@@ -145,10 +149,14 @@ export function NodePalette() {
                                                     <div className="mt-0.5">
                                                         <span className={`text-[9px] px-1 py-0.5 rounded ${getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
                                                             ? 'bg-amber-500/15 text-amber-300'
-                                                            : 'bg-emerald-500/15 text-emerald-300'
+                                                            : getWorkflowBoundaryDescriptor(def.type).kind === 'hybrid'
+                                                                ? 'bg-sky-500/15 text-sky-300'
+                                                                : 'bg-emerald-500/15 text-emerald-300'
                                                             }`}>
                                                             {getWorkflowBoundaryDescriptor(def.type).kind === 'workspace-linked'
                                                                 ? 'Workspace'
+                                                                : getWorkflowBoundaryDescriptor(def.type).kind === 'hybrid'
+                                                                    ? 'Hybrid'
                                                                 : 'Native'}
                                                         </span>
                                                     </div>
@@ -166,7 +174,7 @@ export function NodePalette() {
             {/* Footer hint */}
             <div className="p-3 border-t border-slate-800">
                 <p className="text-[10px] text-slate-600 text-center">
-                    Green: workflow-native • Amber: needs workspace context
+                    Green: native • Blue: hybrid • Amber: workspace-only
                 </p>
             </div>
         </div>

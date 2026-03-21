@@ -9,7 +9,10 @@ import { memo, useCallback } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import { useWorkflowStore } from '../useWorkflowStore'
-import { getWorkflowBoundaryDescriptor, resolveWorkflowNodeContextIssue } from '@/features/workflow-editor/workspace-boundary'
+import {
+    resolveWorkflowRuntimeBoundaryDescriptor,
+    resolveWorkflowNodeContextIssue,
+} from '@/features/workflow-editor/workspace-boundary'
 import {
     FileText, Bot, Users, MapPin, LayoutGrid, ImageIcon,
     Video, Mic, ZoomIn, Film, GitBranch, Download,
@@ -80,18 +83,20 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
 
     const Icon = ICON_MAP[def.icon]
     const status = executionState?.status || 'idle'
-    const boundary = getWorkflowBoundaryDescriptor(nodeType)
+    const boundary = resolveWorkflowRuntimeBoundaryDescriptor({
+        nodeId: id,
+        nodeType,
+        nodeData: nodeData as unknown as Record<string, unknown>,
+    })
     const contextIssue = resolveWorkflowNodeContextIssue({
         nodeId: id,
         nodeType,
         nodeData: nodeData as unknown as Record<string, unknown>,
         label: nodeData.label || def.title,
     })
-    const bindActionLabel = contextIssue?.missing.includes('panelId')
-        ? 'Bind panel'
-        : contextIssue?.missing.includes('episodeId') || contextIssue?.missing.includes('lineId')
-            ? 'Bind line'
-            : 'Bind context'
+    const bindActionLabel = contextIssue?.missing.includes('episodeId') || contextIssue?.missing.includes('lineId')
+        ? 'Fix binding'
+        : 'Open settings'
 
     return (
         <div
@@ -138,9 +143,15 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                     </span>
                     <span className={`text-[8px] px-1 py-0.5 rounded ${boundary.kind === 'workspace-linked'
                         ? 'bg-amber-500/20 text-amber-300'
-                        : 'bg-emerald-500/20 text-emerald-300'
+                        : boundary.kind === 'hybrid'
+                            ? 'bg-sky-500/20 text-sky-300'
+                            : 'bg-emerald-500/20 text-emerald-300'
                         }`}>
-                        {boundary.kind === 'workspace-linked' ? 'Workspace' : 'Native'}
+                        {boundary.kind === 'workspace-linked'
+                            ? 'Workspace'
+                            : boundary.kind === 'hybrid'
+                                ? 'Hybrid'
+                                : 'Native'}
                     </span>
                     <StatusBadge status={status} />
                     {(status === 'completed' || status === 'skipped') ? (

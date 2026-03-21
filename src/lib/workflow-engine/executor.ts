@@ -11,6 +11,7 @@ import type {
     NodeExecutionResult,
     WorkflowExecutionState,
 } from './types'
+import { collectWorkflowNodeInputs } from './input-collection'
 
 
 // ── Topological Sort ──
@@ -80,22 +81,22 @@ function topologicalSort(nodes: SerializedNode[], edges: SerializedEdge[]): Seri
 // ── Gather Inputs from connected edges ──
 
 function gatherInputs(
+    nodeType: string,
     nodeId: string,
     edges: SerializedEdge[],
     nodeOutputs: Map<string, Record<string, unknown>>,
 ): Record<string, unknown> {
-    const inputs: Record<string, unknown> = {}
-
-    for (const edge of edges) {
-        if (edge.target === nodeId) {
-            const sourceOutputs = nodeOutputs.get(edge.source)
-            if (sourceOutputs && edge.sourceHandle) {
-                inputs[edge.targetHandle] = sourceOutputs[edge.sourceHandle]
-            }
-        }
+    const outputRecord: Record<string, Record<string, unknown>> = {}
+    for (const [sourceNodeId, outputs] of nodeOutputs.entries()) {
+        outputRecord[sourceNodeId] = outputs
     }
 
-    return inputs
+    return collectWorkflowNodeInputs({
+        nodeId,
+        nodeType,
+        edges,
+        nodeOutputs: outputRecord,
+    })
 }
 
 // ── Node Executor Registry ──
@@ -295,7 +296,7 @@ export async function executeWorkflow(
 
             try {
                 // Gather inputs from connected nodes
-                const inputs = gatherInputs(node.id, edges, nodeOutputs)
+                const inputs = gatherInputs(node.type, node.id, edges, nodeOutputs)
 
                 // Get executor
                 const executor = nodeExecutors[node.type]

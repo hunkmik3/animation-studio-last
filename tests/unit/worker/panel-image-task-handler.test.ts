@@ -1,5 +1,6 @@
 import type { Job } from 'bullmq'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { getArtStylePrompt } from '@/lib/constants'
 import { TASK_TYPE, type TaskJobData } from '@/lib/task/types'
 
 const prismaMock = vi.hoisted(() => ({
@@ -29,6 +30,8 @@ const outboundMock = vi.hoisted(() => ({
   normalizeReferenceImagesForGeneration: vi.fn(async () => ['normalized-ref-1']),
 }))
 
+const buildPromptMock = vi.hoisted(() => vi.fn(() => 'panel-image-prompt'))
+
 vi.mock('@/lib/prisma', () => ({ prisma: prismaMock }))
 vi.mock('@/lib/workers/utils', () => utilsMock)
 vi.mock('@/lib/media/outbound-image', () => outboundMock)
@@ -56,7 +59,7 @@ vi.mock('@/lib/workers/handlers/image-task-handler-shared', async () => {
 })
 vi.mock('@/lib/prompt-i18n', () => ({
   PROMPT_IDS: { NP_SINGLE_PANEL_IMAGE: 'np_single_panel_image' },
-  buildPrompt: vi.fn(() => 'panel-image-prompt'),
+  buildPrompt: buildPromptMock,
 }))
 
 import { handlePanelImageTask } from '@/lib/workers/handlers/panel-image-task-handler'
@@ -120,6 +123,7 @@ describe('worker panel-image-task-handler behavior', () => {
       panelId: 'panel-1',
       candidateCount: 2,
       imageUrl: 'cos/panel-candidate-1.png',
+      usedPrompt: 'panel-image-prompt',
     })
 
     expect(utilsMock.resolveImageSourceFromGeneration).toHaveBeenCalledWith(
@@ -141,6 +145,21 @@ describe('worker panel-image-task-handler behavior', () => {
         candidateImages: JSON.stringify(['cos/panel-candidate-1.png', 'cos/panel-candidate-2.png']),
       },
     })
+  })
+
+  it('uses payload artStyle override instead of project artStyle when building the prompt', async () => {
+    const job = buildJob({
+      candidateCount: 1,
+      artStyle: 'realistic',
+    })
+
+    await handlePanelImageTask(job)
+
+    expect(buildPromptMock).toHaveBeenCalledWith(expect.objectContaining({
+      variables: expect.objectContaining({
+        style: getArtStylePrompt('realistic', 'zh'),
+      }),
+    }))
   })
 
   it('regeneration branch -> keeps old image in previousImageUrl and stores candidates only', async () => {
@@ -174,6 +193,7 @@ describe('worker panel-image-task-handler behavior', () => {
       panelId: 'panel-1',
       candidateCount: 1,
       imageUrl: null,
+      usedPrompt: 'panel-image-prompt',
     })
 
     expect(prismaMock.novelPromotionPanel.update).toHaveBeenCalledWith({

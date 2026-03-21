@@ -16,12 +16,26 @@ import { normalizeToBase64ForGeneration } from '@/lib/media/outbound-image'
 import { resolveBuiltinCapabilitiesByModelKey } from '@/lib/model-capabilities/lookup'
 import { parseModelKeyStrict } from '@/lib/model-config-contract'
 import { getProviderConfig } from '@/lib/api-config'
+import { getArtStylePrompt } from '@/lib/constants'
 
 type AnyObj = Record<string, unknown>
 type VideoOptionValue = string | number | boolean
 type VideoOptionMap = Record<string, VideoOptionValue>
 type VideoGenerationMode = 'normal' | 'firstlastframe'
 type PanelRecord = NonNullable<Awaited<ReturnType<typeof prisma.novelPromotionPanel.findUnique>>>
+
+function readOptionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function appendPromptClause(base: string, clause: string, locale: TaskJobData['locale']): string {
+  const trimmedBase = base.trim()
+  const trimmedClause = clause.trim()
+  if (!trimmedClause) return trimmedBase
+  if (!trimmedBase) return trimmedClause
+  const separator = locale === 'zh' ? '，' : ', '
+  return `${trimmedBase}${separator}${trimmedClause}`
+}
 
 function extractGenerationOptions(payload: AnyObj): VideoOptionMap {
   const fromEnvelope = payload.generationOptions
@@ -89,10 +103,18 @@ async function generateVideoForPanel(
   const firstLastCustomPrompt = typeof firstLastFramePayload?.customPrompt === 'string' ? firstLastFramePayload.customPrompt : null
   const persistedFirstLastPrompt = firstLastFramePayload ? panel.firstLastFramePrompt : null
   const customPrompt = typeof payload.customPrompt === 'string' ? payload.customPrompt : null
-  const prompt = firstLastCustomPrompt || persistedFirstLastPrompt || customPrompt || panel.videoPrompt || panel.description
-  if (!prompt) {
+  const basePrompt = firstLastCustomPrompt || persistedFirstLastPrompt || customPrompt || panel.videoPrompt || panel.description
+  if (!basePrompt) {
     throw new Error(`Panel ${panel.id} has no video prompt`)
   }
+  const artStyleKey = readOptionalString(payload.artStyle)
+  const artStylePrompt = getArtStylePrompt(artStyleKey, job.data.locale)
+  const styleClause = artStylePrompt
+    ? (job.data.locale === 'zh'
+        ? `整体视频视觉风格：${artStylePrompt}`
+        : `overall video visual style: ${artStylePrompt}`)
+    : ''
+  const prompt = appendPromptClause(basePrompt, styleClause, job.data.locale)
 
   const sourceImageUrl = toSignedUrlIfCos(panel.imageUrl, 3600)
   if (!sourceImageUrl) {

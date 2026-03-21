@@ -1,7 +1,12 @@
 import type { Node } from '@xyflow/react'
 import { resolvePanelIdFromNode } from './execution-contract'
+import {
+  isNodeTypeHybridExecution,
+  isNodeTypeWorkspaceLinked,
+  usesWorkspaceExecutionContext,
+} from '@/lib/workflow-engine/execution-support'
 
-export type WorkflowBoundaryKind = 'workflow-native' | 'workspace-linked'
+export type WorkflowBoundaryKind = 'workflow-native' | 'workspace-linked' | 'hybrid'
 
 export interface WorkflowBoundaryDescriptor {
   kind: WorkflowBoundaryKind
@@ -18,10 +23,10 @@ export interface WorkflowExecutionContextIssue {
 
 export function getWorkspaceContextActionHint(nodeType: string): string {
   if (nodeType === 'image-generate' || nodeType === 'video-generate') {
-    return 'Select a panel in Workspace Binding or click Pull from Workspace.'
+    return 'Optional: select a panel in Workspace Binding or click Pull from Workspace to write results back into the project.'
   }
   if (nodeType === 'voice-synthesis') {
-    return 'Select episode and line in Workspace Binding or click Pull from Workspace.'
+    return 'Optional: select both episode and line in Workspace Binding to bridge this node into project voice-line records.'
   }
   return 'Open node settings and complete required workspace context.'
 }
@@ -50,26 +55,73 @@ function readConfigString(config: Record<string, unknown>, key: string): string 
 export function getWorkflowBoundaryDescriptor(nodeType: string): WorkflowBoundaryDescriptor {
   if (nodeType === 'image-generate') {
     return {
-      kind: 'workspace-linked',
-      summary: 'Requires linked workspace panel context.',
+      kind: 'hybrid',
+      summary: 'Runs standalone from workflow inputs, or can optionally bind to a workspace panel.',
     }
   }
   if (nodeType === 'video-generate') {
     return {
-      kind: 'workspace-linked',
-      summary: 'Requires linked workspace panel with generated image.',
+      kind: 'hybrid',
+      summary: 'Runs standalone from workflow inputs, or can optionally bind to a workspace panel.',
     }
   }
   if (nodeType === 'voice-synthesis') {
     return {
+      kind: 'hybrid',
+      summary: 'Runs standalone from workflow text, or can optionally bind to a workspace voice line.',
+    }
+  }
+  if (isNodeTypeHybridExecution(nodeType)) {
+    return {
+      kind: 'hybrid',
+      summary: 'Runs standalone by default and supports optional workspace bridging.',
+    }
+  }
+  if (isNodeTypeWorkspaceLinked(nodeType)) {
+    return {
       kind: 'workspace-linked',
-      summary: 'Requires workspace episode + voice line context.',
+      summary: 'Requires linked workspace context.',
     }
   }
   return {
     kind: 'workflow-native',
     summary: 'Runs from workflow graph inputs/config without workspace linkage.',
   }
+}
+
+export function resolveWorkflowRuntimeBoundaryDescriptor(params: {
+  nodeId: string
+  nodeType: string
+  nodeData: Record<string, unknown>
+}): WorkflowBoundaryDescriptor {
+  if (isNodeTypeHybridExecution(params.nodeType)) {
+    const usesWorkspaceContext = usesWorkspaceExecutionContext({
+      nodeType: params.nodeType,
+      panelId: resolvePanelIdFromNode(params.nodeId, params.nodeData),
+      config: toRecord(params.nodeData.config),
+    })
+
+    if (usesWorkspaceContext) {
+      if (params.nodeType === 'voice-synthesis') {
+        return {
+          kind: 'workspace-linked',
+          summary: 'Currently bridged into workspace episode + voice-line records.',
+        }
+      }
+
+      return {
+        kind: 'workspace-linked',
+        summary: 'Currently bridged into workspace panel records.',
+      }
+    }
+
+    return {
+      kind: 'workflow-native',
+      summary: 'Currently running standalone from workflow graph inputs/config.',
+    }
+  }
+
+  return getWorkflowBoundaryDescriptor(params.nodeType)
 }
 
 export function resolveWorkflowNodeContextIssue(params: {
@@ -81,37 +133,38 @@ export function resolveWorkflowNodeContextIssue(params: {
   const { nodeId, nodeType, nodeData } = params
   const label = params.label && params.label.trim().length > 0 ? params.label : nodeId
 
-  if (nodeType === 'image-generate' || nodeType === 'video-generate') {
-    const panelId = resolvePanelIdFromNode(nodeId, nodeData)
-    if (!panelId) {
-      return {
-        nodeId,
-        nodeType,
-        label,
-        missing: ['panelId'],
-        message: `${label} requires workspace panel linkage. Select a panel in Workspace Binding or Pull from Workspace before running.`,
-      }
-    }
-    return null
-  }
-
   if (nodeType === 'voice-synthesis') {
     const config = toRecord(nodeData.config)
     const episodeId = readConfigString(config, 'episodeId')
     const lineId = readConfigString(config, 'lineId')
-    const missing: string[] = []
-    if (!episodeId) missing.push('episodeId')
-    if (!lineId) missing.push('lineId')
-    if (missing.length > 0) {
-      return {
-        nodeId,
-        nodeType,
-        label,
-        missing,
-        message: `${label} requires ${missing.join(', ')} to map workflow run into workspace voice-line context. Bind episode/line in Workspace Binding before running.`,
-      }
+    const hasEpisodeId = episodeId.length > 0
+    const hasLineId = lineId.length > 0
+
+    if (hasEpisodeId === hasLineId) {
+      return null
     }
-    return null
+
+    const missing: string[] = []
+    if (!hasEpisodeId) missing.push('episodeId')
+    if (!hasLineId) missing.push('lineId')
+
+    return {
+      nodeId,
+      nodeType,
+      label,
+      missing,
+      message: `${label} has a partial workspace voice binding. Set both episodeId and lineId or clear both fields to run standalone.`,
+    }
+  }
+
+  if (isNodeTypeWorkspaceLinked(nodeType)) {
+    return {
+      nodeId,
+      nodeType,
+      label,
+      missing: ['workspaceContext'],
+      message: `${label} requires explicit workspace context before running.`,
+    }
   }
 
   return null

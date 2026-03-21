@@ -7,6 +7,10 @@ import {
   type ScriptToStoryboardStepOutput,
 } from '@/lib/novel-promotion/script-to-storyboard/orchestrator'
 import type { CharacterAsset, LocationAsset } from '@/lib/storyboard-phases'
+import {
+  buildStoryboardStyleDirective,
+  resolveWorkflowArtStylePrompt,
+} from '../art-style'
 import type { NodeExecutor } from './types'
 
 /**
@@ -62,11 +66,16 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
     throw new Error('Input text is required for storyboard generation.')
   }
 
-  const model = (ctx.config.model as string) || ctx.projectModelConfig.analysisModel
+  const model = (ctx.config.model as string) || ctx.modelConfig.analysisModel
   if (!model) {
     throw new Error('No AI model configured. Set a model in node settings or project config.')
   }
 
+  const { artStyle, artStylePrompt } = resolveWorkflowArtStylePrompt(ctx.config.style, ctx.locale)
+  const styleDirective = buildStoryboardStyleDirective({
+    artStylePrompt,
+    locale: ctx.locale,
+  })
   const temperature = typeof ctx.config.temperature === 'number'
     ? ctx.config.temperature
     : undefined
@@ -111,7 +120,7 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
       temperature,
       reasoning,
       reasoningEffort: 'high',
-      projectId: ctx.projectId,
+      projectId: ctx.projectId || undefined,
       action,
       streamStepId: meta.stepId,
       streamStepAttempt: meta.stepAttempt || 1,
@@ -132,6 +141,7 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
     clips,
     novelPromotionData: { characters, locations },
     promptTemplates,
+    styleDirective,
     runStep,
   })
 
@@ -169,6 +179,8 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
       totalStepCount: result.summary.totalStepCount,
       reasoning,
       pipelineMode: '4-phase-orchestrator',
+      artStyle,
+      artStylePrompt,
     },
   }
 }

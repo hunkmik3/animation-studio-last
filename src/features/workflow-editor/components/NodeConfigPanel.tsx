@@ -15,9 +15,11 @@ import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import { useWorkflowStore } from '../useWorkflowStore'
 import { fetchWorkflowWorkspaceContext } from '@/features/workflow-editor/api'
 import { resolvePanelIdFromNode } from '@/features/workflow-editor/execution-contract'
+import { extractStoryboardPanelsFromOutputs } from '@/features/workflow-editor/storyboard-materialization'
 import {
     getWorkflowBoundaryDescriptor,
     getWorkspaceContextActionHint,
+    resolveWorkflowRuntimeBoundaryDescriptor,
     resolveWorkflowNodeContextIssue,
 } from '@/features/workflow-editor/workspace-boundary'
 import { toDisplayImageUrl } from '@/lib/media/image-url'
@@ -467,7 +469,11 @@ function RuntimeContextSection({
     nodeType: string
     nodeData: Record<string, unknown>
 }) {
-    const boundary = getWorkflowBoundaryDescriptor(nodeType)
+    const boundary = resolveWorkflowRuntimeBoundaryDescriptor({
+        nodeId,
+        nodeType,
+        nodeData,
+    })
     const issue = resolveWorkflowNodeContextIssue({
         nodeId,
         nodeType,
@@ -480,10 +486,14 @@ function RuntimeContextSection({
             <div className="space-y-2">
                 <div className={`text-[10px] px-2 py-1 rounded ${boundary.kind === 'workspace-linked'
                     ? 'bg-amber-500/15 text-amber-300'
-                    : 'bg-emerald-500/15 text-emerald-300'
+                    : boundary.kind === 'hybrid'
+                        ? 'bg-sky-500/15 text-sky-300'
+                        : 'bg-emerald-500/15 text-emerald-300'
                     }`}>
                     {boundary.kind === 'workspace-linked'
                         ? 'Workspace-linked node'
+                        : boundary.kind === 'hybrid'
+                            ? 'Hybrid node'
                         : 'Workflow-native node'}
                 </div>
                 <p className="text-[10px] text-slate-400">{boundary.summary}</p>
@@ -576,15 +586,15 @@ function WorkspaceBindingSection({
         <SectionHeader title="Workspace Binding" icon={Link2} defaultOpen={true}>
             <div className="space-y-3">
                 {!projectId && (
-                    <div className="rounded bg-red-500/15 px-2 py-1.5 text-[10px] text-red-300">
-                        Missing projectId. Open workflow from a project to bind workspace context.
+                    <div className="rounded bg-slate-700/40 px-2 py-1.5 text-[10px] text-slate-300">
+                        No project context detected. This node can still run standalone, but workspace binding options are unavailable.
                     </div>
                 )}
 
                 {nodeType !== 'voice-synthesis' && (
                     <>
-                        <div className={`rounded px-2 py-1.5 text-[10px] ${panelId ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
-                            {panelId ? `Linked panel: ${panelId}` : 'Not linked: panelId is required'}
+                        <div className={`rounded px-2 py-1.5 text-[10px] ${panelId ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-700/40 text-slate-300'}`}>
+                            {panelId ? `Workspace panel linked: ${panelId}` : 'Standalone mode. Optional: link a workspace panel to mirror outputs into the project.'}
                         </div>
                         <div>
                             <label className="block text-[11px] font-medium text-slate-400 mb-1.5 uppercase tracking-wide">
@@ -616,10 +626,10 @@ function WorkspaceBindingSection({
 
                 {nodeType === 'voice-synthesis' && (
                     <>
-                        <div className={`rounded px-2 py-1.5 text-[10px] ${voiceEpisodeId && voiceLineId ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                        <div className={`rounded px-2 py-1.5 text-[10px] ${voiceEpisodeId && voiceLineId ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-700/40 text-slate-300'}`}>
                             {voiceEpisodeId && voiceLineId
-                                ? `Linked episode/line: ${voiceEpisodeId} / ${voiceLineId}`
-                                : 'Not linked: episodeId + lineId are required'}
+                                ? `Workspace voice line linked: ${voiceEpisodeId} / ${voiceLineId}`
+                                : 'Standalone mode. Optional: bind both episode and line to reuse workspace voice-line records.'}
                         </div>
 
                         <div>
@@ -810,6 +820,46 @@ function ImagePromptSection({
     )
 }
 
+function StoryboardMaterializationSection({
+    nodeType,
+    outputs,
+    initialOutput,
+    hasMaterializedPanels,
+    onMaterialize,
+}: {
+    nodeType: string
+    outputs: Record<string, unknown> | undefined
+    initialOutput: Record<string, unknown> | undefined
+    hasMaterializedPanels: boolean
+    onMaterialize: () => void
+}) {
+    if (nodeType !== 'storyboard') return null
+
+    const panels = extractStoryboardPanelsFromOutputs(outputs || initialOutput || null)
+    if (panels.length === 0) return null
+
+    return (
+        <SectionHeader title="Panel Workflow" icon={LayoutGrid} defaultOpen={true}>
+            <div className="space-y-3">
+                <div className="rounded-lg bg-slate-900/70 border border-slate-700 px-3 py-2 text-xs text-slate-300">
+                    {`Storyboard currently has ${panels.length} materializable panels.`}
+                </div>
+                <button
+                    type="button"
+                    onClick={onMaterialize}
+                    className="flex items-center justify-center gap-2 w-full px-3 py-2 text-xs font-medium rounded-lg bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    {hasMaterializedPanels ? 'Refresh Panel Workflow' : 'Create Panel Workflow'}
+                </button>
+                <p className="text-[10px] text-slate-500 leading-relaxed">
+                    This expands storyboard output into editable character refs, scene refs, plus per-panel prompt, image, and video nodes so the workflow can keep going like the official project flow.
+                </p>
+            </div>
+        </SectionHeader>
+    )
+}
+
 // ── Config Fields Renderer ──
 function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
     def: any
@@ -947,6 +997,7 @@ export function NodeConfigPanel() {
     const updateNodeConfig = useWorkflowStore((s) => s.updateNodeConfig)
     const updateNodeData = useWorkflowStore((s) => s.updateNodeData)
     const executeSingleNode = useWorkflowStore((s) => s.executeSingleNode)
+    const materializeStoryboardNode = useWorkflowStore((s) => s.materializeStoryboardNode)
     const projectId = useWorkflowStore((s) => s.meta.projectId)
     const loadFromJSON = useWorkflowStore((s) => s.loadFromJSON)
     const setMeta = useWorkflowStore((s) => s.setMeta)
@@ -954,8 +1005,8 @@ export function NodeConfigPanel() {
     const selectedNode = nodes.find((n) => n.id === selectedNodeId)
     const nodeData = selectedNode?.data as { nodeType: string; config: Record<string, unknown>; label?: string; initialOutput?: Record<string, unknown> } | undefined
     const def = nodeData ? NODE_TYPE_REGISTRY[nodeData.nodeType] : undefined
-    const workspaceLinked = nodeData
-        ? getWorkflowBoundaryDescriptor(nodeData.nodeType).kind === 'workspace-linked'
+    const supportsWorkspaceBinding = nodeData
+        ? getWorkflowBoundaryDescriptor(nodeData.nodeType).kind !== 'workflow-native'
         : false
 
     const [workspaceContextData, setWorkspaceContextData] = useState<WorkspaceBindingContextData | null>(null)
@@ -976,7 +1027,7 @@ export function NodeConfigPanel() {
     }, [selectedNodeId, executeSingleNode])
 
     const loadWorkspaceContext = useCallback(async () => {
-        if (!projectId || !workspaceLinked) return
+        if (!projectId || !supportsWorkspaceBinding) return
         setWorkspaceContextLoading(true)
         setWorkspaceContextError(null)
         try {
@@ -994,10 +1045,10 @@ export function NodeConfigPanel() {
         } finally {
             setWorkspaceContextLoading(false)
         }
-    }, [projectId, workspaceLinked])
+    }, [projectId, supportsWorkspaceBinding])
 
     useEffect(() => {
-        if (!workspaceLinked) {
+        if (!supportsWorkspaceBinding) {
             setWorkspaceContextData(null)
             setWorkspaceContextError(null)
             setWorkspaceContextLoading(false)
@@ -1005,11 +1056,11 @@ export function NodeConfigPanel() {
         }
         if (!projectId) {
             setWorkspaceContextData(null)
-            setWorkspaceContextError('Missing projectId in workflow context')
+            setWorkspaceContextError(null)
             return
         }
         void loadWorkspaceContext()
-    }, [loadWorkspaceContext, projectId, workspaceLinked])
+    }, [loadWorkspaceContext, projectId, supportsWorkspaceBinding])
 
     const handleBindPanel = useCallback((panelId: string) => {
         if (!selectedNodeId || !nodeData) return
@@ -1062,6 +1113,27 @@ export function NodeConfigPanel() {
         if (!workspaceContextData) return null
         return workspaceContextData
     }, [workspaceContextData])
+
+    const hasMaterializedStoryboardPanels = useMemo(() => {
+        if (!selectedNodeId) return false
+        return nodes.some((node) => {
+            const candidateData = node.data
+            if (!candidateData || typeof candidateData !== 'object' || Array.isArray(candidateData)) return false
+            return (candidateData as Record<string, unknown>).derivedFromStoryboard === selectedNodeId
+        })
+    }, [nodes, selectedNodeId])
+
+    const handleMaterializeStoryboardPanels = useCallback(() => {
+        if (!selectedNodeId) return
+        try {
+            materializeStoryboardNode(selectedNodeId)
+        } catch (error) {
+            const message = error instanceof Error && error.message.trim().length > 0
+                ? error.message
+                : 'Failed to materialize storyboard panels'
+            setWorkspaceContextError(message)
+        }
+    }, [materializeStoryboardNode, selectedNodeId])
 
     // ── Empty state ──
     if (!selectedNode || !def || !nodeData) {
@@ -1196,6 +1268,13 @@ export function NodeConfigPanel() {
                 <TextOutputSection
                     outputs={executionState?.outputs}
                     initialOutput={nodeData.initialOutput}
+                />
+                <StoryboardMaterializationSection
+                    nodeType={nodeData.nodeType}
+                    outputs={executionState?.outputs as Record<string, unknown> | undefined}
+                    initialOutput={nodeData.initialOutput}
+                    hasMaterializedPanels={hasMaterializedStoryboardPanels}
+                    onMaterialize={handleMaterializeStoryboardPanels}
                 />
 
                 {/* Text Input — show content preview for text-input nodes */}

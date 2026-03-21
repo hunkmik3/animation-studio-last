@@ -11,6 +11,7 @@
 //      (frontend polls via WorkflowTaskMonitor / SSE)
 
 import type { Locale } from '@/i18n/routing'
+import type { WorkflowExecutionModelConfig } from '@/lib/config-service'
 
 // ── Context passed to every executor ──
 
@@ -20,29 +21,21 @@ export interface NodeExecutorContext {
   config: Record<string, unknown>
   inputs: Record<string, unknown>
 
-  // Project / auth context
-  projectId: string
+  // Auth / runtime context
+  projectId?: string | null
   userId: string
   locale: Locale
 
-  // Project-level model configuration (from config-service)
-  projectModelConfig: ProjectModelConfig
+  // Workflow execution model configuration.
+  // If workflow is bound to a project, this resolves from project config.
+  // Otherwise it resolves from user-level defaults.
+  modelConfig: WorkflowExecutionModelConfig
 
   // Optional: linked panel ID (for image/video nodes synced from workspace)
   panelId?: string
 
   // Optional: request metadata for tracing
   requestId?: string
-}
-
-/** Mirrors the shape from config-service.ts */
-export interface ProjectModelConfig {
-  analysisModel: string | null
-  characterModel: string | null
-  locationModel: string | null
-  storyboardModel: string | null
-  editModel: string | null
-  videoModel: string | null
 }
 
 // ── Result returned by every executor ──

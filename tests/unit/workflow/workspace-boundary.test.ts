@@ -29,19 +29,19 @@ function makeNode(params: {
 }
 
 describe('workflow workspace boundary contract', () => {
-  it('classifies workspace-linked and workflow-native node boundaries', () => {
+  it('classifies native, hybrid, and workspace-linked node boundaries', () => {
     expect(getWorkflowBoundaryDescriptor('text-input').kind).toBe('workflow-native')
-    expect(getWorkflowBoundaryDescriptor('image-generate').kind).toBe('workspace-linked')
-    expect(getWorkflowBoundaryDescriptor('voice-synthesis').kind).toBe('workspace-linked')
+    expect(getWorkflowBoundaryDescriptor('image-generate').kind).toBe('hybrid')
+    expect(getWorkflowBoundaryDescriptor('voice-synthesis').kind).toBe('hybrid')
   })
 
-  it('returns actionable context hints for workspace-linked node types', () => {
-    expect(getWorkspaceContextActionHint('image-generate')).toContain('Select a panel')
-    expect(getWorkspaceContextActionHint('video-generate')).toContain('Select a panel')
-    expect(getWorkspaceContextActionHint('voice-synthesis')).toContain('Select episode and line')
+  it('returns actionable context hints for hybrid node types', () => {
+    expect(getWorkspaceContextActionHint('image-generate')).toContain('Optional')
+    expect(getWorkspaceContextActionHint('video-generate')).toContain('Optional')
+    expect(getWorkspaceContextActionHint('voice-synthesis')).toContain('Optional')
   })
 
-  it('detects missing workspace panel context for media nodes', () => {
+  it('does not require workspace panel context for standalone media nodes', () => {
     const issue = resolveWorkflowNodeContextIssue({
       nodeId: 'image_node_1',
       nodeType: 'image-generate',
@@ -53,14 +53,10 @@ describe('workflow workspace boundary contract', () => {
       label: 'Image Node',
     })
 
-    expect(issue).toEqual(expect.objectContaining({
-      nodeId: 'image_node_1',
-      nodeType: 'image-generate',
-      missing: ['panelId'],
-    }))
+    expect(issue).toBeNull()
   })
 
-  it('detects missing episode/line mapping for voice nodes', () => {
+  it('detects partial episode/line mapping for voice nodes', () => {
     const issue = resolveWorkflowNodeContextIssue({
       nodeId: 'voice_1',
       nodeType: 'voice-synthesis',
@@ -82,16 +78,17 @@ describe('workflow workspace boundary contract', () => {
     const nodes: Node[] = [
       makeNode({ id: 'n_text', nodeType: 'text-input' }),
       makeNode({ id: 'n_img_missing', nodeType: 'image-generate' }),
+      makeNode({ id: 'n_voice_ok', nodeType: 'voice-synthesis' }),
       makeNode({
-        id: 'n_voice_ok',
+        id: 'n_voice_partial',
         nodeType: 'voice-synthesis',
-        data: { config: { episodeId: 'ep_1', lineId: 'line_1' } },
+        data: { config: { episodeId: 'ep_1', lineId: '' } },
       }),
       makeNode({ id: 'group_1', nodeType: 'workflowGroup', type: 'workflowGroup' }),
     ]
 
     const issues = collectWorkflowExecutionContextIssues(nodes)
     expect(issues).toHaveLength(1)
-    expect(issues[0]?.nodeId).toBe('n_img_missing')
+    expect(issues[0]?.nodeId).toBe('n_voice_partial')
   })
 })

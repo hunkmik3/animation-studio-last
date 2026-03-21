@@ -13,33 +13,13 @@ import {
     updateWorkflow,
     pushWorkflowToProject,
 } from '../api'
+import { CLASSIC_PIPELINE_TEMPLATE } from '@/features/workflow-editor/workflow-templates'
 import {
     Save, Play, Trash2, Download, Upload,
     Zap, LayoutTemplate, Workflow,
     CheckCircle2, AlertCircle, UploadCloud, RotateCcw
 } from 'lucide-react'
 import { collectWorkflowExecutionContextIssues } from '@/features/workflow-editor/workspace-boundary'
-
-// Pre-built classic pipeline template
-const CLASSIC_PIPELINE_TEMPLATE = {
-    nodes: [
-        { id: 'n1', type: 'workflowNode', position: { x: 50, y: 250 }, data: { nodeType: 'text-input', label: 'Novel / Script', config: { content: '' } } },
-        { id: 'n2', type: 'workflowNode', position: { x: 350, y: 100 }, data: { nodeType: 'character-extract', label: 'Extract Characters', config: { prompt: '', model: '', maxCharacters: 20 } } },
-        { id: 'n3', type: 'workflowNode', position: { x: 350, y: 400 }, data: { nodeType: 'scene-extract', label: 'Extract Scenes', config: { prompt: '', model: '', maxScenes: 30 } } },
-        { id: 'n4', type: 'workflowNode', position: { x: 700, y: 250 }, data: { nodeType: 'storyboard', label: 'Storyboard', config: { prompt: 'Create a storyboard from the script with panel descriptions, shot types, and camera moves.\n\nScript: {input}\nCharacters: {characters}\nScenes: {scenes}', model: '', panelCount: 10, style: 'anime' } } },
-        { id: 'n5', type: 'workflowNode', position: { x: 1050, y: 150 }, data: { nodeType: 'image-generate', label: 'Generate Images', config: { provider: 'flux', model: '', negativePrompt: '', aspectRatio: '16:9', resolution: '2K' } } },
-        { id: 'n7', type: 'workflowNode', position: { x: 1400, y: 250 }, data: { nodeType: 'video-generate', label: 'Generate Video', config: { provider: 'kling', model: '', duration: 5, aspectRatio: '16:9' } } },
-    ],
-    edges: [
-        { id: 'e1', source: 'n1', sourceHandle: 'text', target: 'n2', targetHandle: 'text', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e2', source: 'n1', sourceHandle: 'text', target: 'n3', targetHandle: 'text', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e3', source: 'n1', sourceHandle: 'text', target: 'n4', targetHandle: 'text', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e4', source: 'n2', sourceHandle: 'characters', target: 'n4', targetHandle: 'characters', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e5', source: 'n3', sourceHandle: 'scenes', target: 'n4', targetHandle: 'scenes', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e6', source: 'n4', sourceHandle: 'panels', target: 'n5', targetHandle: 'prompt', animated: true, style: { strokeWidth: 2 } },
-        { id: 'e8', source: 'n5', sourceHandle: 'image', target: 'n7', targetHandle: 'image', animated: true, style: { strokeWidth: 2 } },
-    ],
-}
 
 export function WorkflowToolbar() {
     const meta = useWorkflowStore((s) => s.meta)

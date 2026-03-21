@@ -3,6 +3,9 @@ import type { NodeExecutorContext } from '@/lib/workflow-engine/executors'
 import { TASK_TYPE } from '@/lib/task/types'
 
 const mockSubmitTask = vi.fn()
+const mockGenerateAudio = vi.fn()
+const mockProcessMediaResult = vi.fn()
+const mockEnsureMediaObjectFromStorageKey = vi.fn()
 const mockHasVoiceLineAudioOutput = vi.fn()
 const mockBuildDefaultTaskBillingInfo = vi.fn(() => ({ source: 'test' }))
 const mockWithTaskUiPayload = vi.fn((payload: Record<string, unknown>) => payload)
@@ -29,6 +32,18 @@ vi.mock('@/lib/prisma', () => ({
 
 vi.mock('@/lib/task/submitter', () => ({
   submitTask: mockSubmitTask,
+}))
+
+vi.mock('@/lib/generator-api', () => ({
+  generateAudio: mockGenerateAudio,
+}))
+
+vi.mock('@/lib/media-process', () => ({
+  processMediaResult: mockProcessMediaResult,
+}))
+
+vi.mock('@/lib/media/service', () => ({
+  ensureMediaObjectFromStorageKey: mockEnsureMediaObjectFromStorageKey,
 }))
 
 vi.mock('@/lib/task/has-output', () => ({
@@ -59,7 +74,7 @@ function createContext(overrides?: Partial<NodeExecutorContext>): NodeExecutorCo
     projectId: 'project_1',
     userId: 'user_1',
     locale: 'en',
-    projectModelConfig: {
+    modelConfig: {
       analysisModel: null,
       characterModel: null,
       locationModel: null,
@@ -95,6 +110,21 @@ describe('workflow voice synthesis executor', () => {
     mockSubmitTask.mockResolvedValue({
       taskId: 'task_voice_1',
       deduped: false,
+    })
+    mockGenerateAudio.mockResolvedValue({
+      success: true,
+      audioUrl: 'https://cdn.example.com/generated.mp3',
+    })
+    mockProcessMediaResult.mockResolvedValue('workflow/voice/generated.mp3')
+    mockEnsureMediaObjectFromStorageKey.mockResolvedValue({
+      id: 'media_audio_1',
+      publicId: 'pub_audio_1',
+      url: '/m/pub_audio_1',
+      mimeType: 'audio/mpeg',
+      sizeBytes: 2048,
+      width: null,
+      height: null,
+      durationMs: 1200,
     })
   })
 
@@ -160,7 +190,74 @@ describe('workflow voice synthesis executor', () => {
         episodeId: '',
         lineId: '',
       },
-    }))).rejects.toThrow('requires episodeId')
+    }))).rejects.toThrow('requires audioModel')
+    expect(mockSubmitTask).not.toHaveBeenCalled()
+  })
+
+  it('generates standalone workflow audio when no workspace binding is provided', async () => {
+    const { executeVoiceSynthesis } = await import('@/lib/workflow-engine/executors/voice-synthesis')
+
+    const result = await executeVoiceSynthesis(createContext({
+      projectId: null,
+      config: {
+        episodeId: '',
+        lineId: '',
+        audioModel: 'qwen::qwen-tts',
+        voice: 'default',
+        rate: 1.1,
+        updateLineContentFromInput: false,
+      },
+      inputs: {
+        text: 'Standalone workflow speech',
+      },
+    }))
+
+    expect(mockGenerateAudio).toHaveBeenCalledWith(
+      'user_1',
+      'qwen::qwen-tts',
+      'Standalone workflow speech',
+      {
+        voice: 'default',
+        rate: 1.1,
+      },
+    )
+    expect(mockProcessMediaResult).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'https://cdn.example.com/generated.mp3',
+      type: 'audio',
+      keyPrefix: 'workflow/voice-synthesis',
+      targetId: 'node_voice',
+    }))
+    expect(mockSubmitTask).not.toHaveBeenCalled()
+    expect(mockNovelPromotionProjectFindUnique).not.toHaveBeenCalled()
+    expect(result.outputs).toEqual(expect.objectContaining({
+      audio: '/m/pub_audio_1',
+      audioUrl: '/m/pub_audio_1',
+      audioMediaId: 'media_audio_1',
+      content: 'Standalone workflow speech',
+    }))
+    expect(result.metadata).toEqual(expect.objectContaining({
+      mode: 'standalone',
+      audioModel: 'qwen::qwen-tts',
+      voice: 'default',
+      rate: 1.1,
+    }))
+  })
+
+  it('fails explicitly when voice node has only partial workspace binding', async () => {
+    const { executeVoiceSynthesis } = await import('@/lib/workflow-engine/executors/voice-synthesis')
+
+    await expect(executeVoiceSynthesis(createContext({
+      projectId: 'project_1',
+      config: {
+        episodeId: 'episode_1',
+        lineId: '',
+        audioModel: 'qwen::qwen-tts',
+      },
+      inputs: {
+        text: 'Ignored because binding is invalid',
+      },
+    }))).rejects.toThrow('partial workspace binding')
+    expect(mockGenerateAudio).not.toHaveBeenCalled()
     expect(mockSubmitTask).not.toHaveBeenCalled()
   })
 })

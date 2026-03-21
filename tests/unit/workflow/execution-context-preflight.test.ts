@@ -61,17 +61,20 @@ describe('workflow execution context preflight', () => {
     })
   })
 
-  it('fails fast when workspace-linked nodes are missing required context', async () => {
+  it('fails fast when a hybrid node has partial workspace binding', async () => {
     const { useWorkflowStore } = await import('@/features/workflow-editor/useWorkflowStore')
     const nodes: Node[] = [
       {
-        id: 'node_image_1',
+        id: 'node_voice_1',
         type: 'workflowNode',
         position: { x: 0, y: 0 },
         data: {
-          nodeType: 'image-generate',
-          label: 'Image Node',
-          config: {},
+          nodeType: 'voice-synthesis',
+          label: 'Voice Node',
+          config: {
+            episodeId: 'episode_1',
+            lineId: '',
+          },
         },
       },
     ]

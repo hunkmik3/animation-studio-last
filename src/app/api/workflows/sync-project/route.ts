@@ -3,6 +3,7 @@ import type { Edge, Node } from '@xyflow/react'
 import { prisma } from '@/lib/prisma'
 import { requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { apiHandler, ApiError } from '@/lib/api-errors'
+import { normalizeWorkflowArtStyle } from '@/lib/workflow-engine/art-style'
 
 export const GET = apiHandler(async (request: NextRequest) => {
     const authResult = await requireUserAuth()
@@ -254,6 +255,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
                         config: {
                             provider: 'flux',
                             model: novelProj.imageModel || '',
+                            artStyle: normalizeWorkflowArtStyle(novelProj.artStyle) || 'japanese-anime',
                             aspectRatio: novelProj.videoRatio || '16:9',
                             resolution: novelProj.imageResolution || '2K'
                         },
@@ -276,6 +278,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
                         config: {
                             provider: 'kling',
                             model: novelProj.videoModel || '',
+                            artStyle: normalizeWorkflowArtStyle(novelProj.artStyle) || 'japanese-anime',
                             duration: 5,
                             aspectRatio: novelProj.videoRatio || '16:9'
                         },
@@ -342,7 +345,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
                     config: {
                         prompt: 'Script: {input}',
                         panelCount: 4,
-                        style: novelProj.artStyle || 'anime'
+                        style: normalizeWorkflowArtStyle(novelProj.artStyle) || 'japanese-anime'
                     }
                 }
             })

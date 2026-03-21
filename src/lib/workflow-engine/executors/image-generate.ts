@@ -3,8 +3,37 @@ import { submitTask } from '@/lib/task/submitter'
 import { TASK_TYPE } from '@/lib/task/types'
 import { buildDefaultTaskBillingInfo } from '@/lib/billing'
 import { withTaskUiPayload } from '@/lib/task/ui-payload'
-import { buildImageBillingPayload } from '@/lib/config-service'
+import {
+  buildImageBillingPayload,
+  getUserModelConfig,
+  resolveModelCapabilityGenerationOptions,
+} from '@/lib/config-service'
+import { generateImage } from '@/lib/generator-api'
+import {
+  applyWorkflowArtStyleToPrompt,
+  resolveWorkflowArtStylePrompt,
+} from '../art-style'
 import type { NodeExecutor } from './types'
+import {
+  normalizeStandaloneMediaInput,
+  persistStandaloneGeneratedMedia,
+  resolveStandaloneGeneratedMediaSource,
+} from './standalone-generation'
+
+function readConfigString(config: Record<string, unknown>, key: string): string {
+  const raw = config[key]
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function readOptionalStringInput(inputs: Record<string, unknown>, key: string): string {
+  const raw = inputs[key]
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function readOptionalNumberConfig(config: Record<string, unknown>, key: string): number | null {
+  const raw = config[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
 
 /**
  * Image Generate executor — BRIDGE to production task system.
@@ -29,7 +58,85 @@ import type { NodeExecutor } from './types'
  */
 export const executeImageGenerate: NodeExecutor = async (ctx) => {
   if (!ctx.panelId) {
-    throw new Error('Image generation requires a linked panel. Use "Pull from Workspace" to link nodes to panels.')
+    const imageModel = readConfigString(ctx.config, 'model') || ctx.modelConfig.storyboardModel
+    if (!imageModel) {
+      throw new Error('Image model not configured. Set a model in node settings or user defaults.')
+    }
+
+    const customPrompt = readConfigString(ctx.config, 'customPrompt')
+    const promptInput = readOptionalStringInput(ctx.inputs, 'prompt')
+    const basePrompt = customPrompt || promptInput
+    if (!basePrompt) {
+      throw new Error('Image generation requires a prompt input or custom prompt.')
+    }
+    const { artStyle, artStylePrompt } = resolveWorkflowArtStylePrompt(ctx.config.artStyle, ctx.locale)
+    const prompt = applyWorkflowArtStyleToPrompt({
+      prompt: basePrompt,
+      artStylePrompt,
+      locale: ctx.locale,
+      mode: 'image',
+    })
+
+    const userConfig = await getUserModelConfig(ctx.userId)
+    const runtimeSelections: Record<string, string | number | boolean> = {}
+    const resolution = readConfigString(ctx.config, 'resolution')
+    if (resolution) runtimeSelections.resolution = resolution
+    const capabilityOptions = resolveModelCapabilityGenerationOptions({
+      modelType: 'image',
+      modelKey: imageModel,
+      capabilityDefaults: userConfig.capabilityDefaults,
+      runtimeSelections,
+    })
+
+    const aspectRatio = readConfigString(ctx.config, 'aspectRatio')
+    const negativePrompt = readConfigString(ctx.config, 'negativePrompt')
+    const referenceImages = await normalizeStandaloneMediaInput(ctx.inputs.reference)
+    const result = await generateImage(ctx.userId, imageModel, prompt, {
+      ...(referenceImages.length > 0 ? { referenceImages } : {}),
+      ...(aspectRatio ? { aspectRatio } : {}),
+      ...(negativePrompt ? { negativePrompt } : {}),
+      ...capabilityOptions,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Image generation failed')
+    }
+
+    const resolved = await resolveStandaloneGeneratedMediaSource({
+      result,
+      userId: ctx.userId,
+      mediaType: 'image',
+    })
+    const mediaRef = await persistStandaloneGeneratedMedia({
+      nodeId: ctx.nodeId,
+      nodeType: ctx.nodeType,
+      mediaType: 'image',
+      source: resolved.source,
+      ...(resolved.downloadHeaders ? { downloadHeaders: resolved.downloadHeaders } : {}),
+    })
+
+    return {
+      outputs: {
+        image: mediaRef.url,
+        imageUrl: mediaRef.url,
+        imageMediaId: mediaRef.id,
+        usedPrompt: prompt,
+      },
+      message: 'Image generated',
+      metadata: {
+        mode: 'standalone',
+        imageModel,
+        referenceImageCount: referenceImages.length,
+        resolution: runtimeSelections.resolution || null,
+        aspectRatio: aspectRatio || null,
+        negativePrompt: negativePrompt || null,
+        seed: readOptionalNumberConfig(ctx.config, 'seed'),
+        artStyle,
+        artStylePrompt,
+      },
+    }
+  }
+  if (!ctx.projectId) {
+    throw new Error('Image generation workspace bridge requires projectId.')
   }
 
   const panel = await prisma.novelPromotionPanel.findUnique({
@@ -39,7 +146,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     throw new Error('Panel not found')
   }
 
-  const imageModel = (ctx.config.model as string) || ctx.projectModelConfig.storyboardModel
+  const imageModel = (ctx.config.model as string) || ctx.modelConfig.storyboardModel
   if (!imageModel) {
     throw new Error('Image model not configured. Set a model in node settings or project config.')
   }
@@ -47,6 +154,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
   const customPrompt = typeof ctx.config.customPrompt === 'string' && ctx.config.customPrompt.trim()
     ? ctx.config.customPrompt.trim()
     : undefined
+  const { artStyle } = resolveWorkflowArtStylePrompt(ctx.config.artStyle, ctx.locale)
 
   let billingPayload: Record<string, unknown>
   try {
@@ -63,6 +171,9 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
 
   if (customPrompt) {
     billingPayload.customPrompt = customPrompt
+  }
+  if (artStyle) {
+    billingPayload.artStyle = artStyle
   }
 
   const result = await submitTask({
@@ -83,6 +194,6 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     async: true,
     taskId: result.taskId,
     message: 'Image generation task submitted',
-    metadata: { imageModel, panelId: ctx.panelId, deduped: result.deduped },
+    metadata: { imageModel, panelId: ctx.panelId, deduped: result.deduped, artStyle: artStyle || null },
   }
 }

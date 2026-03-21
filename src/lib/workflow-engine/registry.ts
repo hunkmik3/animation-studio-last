@@ -4,6 +4,7 @@
 // =============================================
 
 import type { WorkflowNodeTypeDefinition } from './types'
+import { WORKFLOW_ART_STYLE_OPTIONS } from './art-style'
 
 // ── Node Type Definitions ──
 
@@ -138,32 +139,31 @@ const STORYBOARD_NODE: WorkflowNodeTypeDefinition = {
         { key: 'model', label: 'AI Model', type: 'model-picker', required: true },
         { key: 'panelCount', label: 'Target Panel Count', type: 'number', defaultValue: 10 },
         {
-            key: 'style', label: 'Visual Style', type: 'select', options: [
-                { label: 'Anime', value: 'anime' },
-                { label: 'Realistic', value: 'realistic' },
-                { label: 'Comic', value: 'comic' },
-                { label: 'Watercolor', value: 'watercolor' },
-            ], defaultValue: 'anime'
+            key: 'style',
+            label: 'Visual Style',
+            type: 'select',
+            options: WORKFLOW_ART_STYLE_OPTIONS,
+            defaultValue: 'japanese-anime',
         },
     ],
     defaultConfig: {
         prompt: 'Create a storyboard plan for the following script. Generate visual panel descriptions with shot types, camera movements, and character positions.\n\nScript:\n{input}\n\nCharacters:\n{characters}\n\nScenes:\n{scenes}\n\nOutput a JSON array of panel objects.',
         model: '',
         panelCount: 10,
-        style: 'anime',
+        style: 'japanese-anime',
     },
 }
 
 const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
     type: 'image-generate',
     title: 'Image Generate',
-    description: 'Generate images using AI (Flux, Stable Diffusion, etc.)',
+    description: 'Generate images from workflow prompts, with optional workspace panel binding',
     icon: 'Image',
     category: 'media',
     color: '#3b82f6',
     inputs: [
         { id: 'prompt', name: 'Prompt', type: 'text', required: true },
-        { id: 'reference', name: 'Reference Image', type: 'image', required: false },
+        { id: 'reference', name: 'Reference Images', type: 'image', required: false, multiple: true },
     ],
     outputs: [
         { id: 'image', name: 'Image', type: 'image', required: true },
@@ -178,6 +178,13 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], required: true
         },
         { key: 'model', label: 'Model', type: 'model-picker', required: true },
+        {
+            key: 'artStyle',
+            label: 'Visual Style',
+            type: 'select',
+            options: WORKFLOW_ART_STYLE_OPTIONS,
+            defaultValue: 'japanese-anime',
+        },
         { key: 'customPrompt', label: 'Custom Prompt', type: 'textarea', placeholder: 'Leave empty to use auto-generated prompt from panel data. Enter a custom prompt to override.' },
         { key: 'negativePrompt', label: 'Negative Prompt', type: 'textarea' },
         {
@@ -194,13 +201,21 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], defaultValue: '2K'
         },
     ],
-    defaultConfig: { provider: 'flux', model: '', customPrompt: '', negativePrompt: '', aspectRatio: '16:9', resolution: '2K' },
+    defaultConfig: {
+        provider: 'flux',
+        model: '',
+        artStyle: 'japanese-anime',
+        customPrompt: '',
+        negativePrompt: '',
+        aspectRatio: '16:9',
+        resolution: '2K',
+    },
 }
 
 const VIDEO_GENERATE_NODE: WorkflowNodeTypeDefinition = {
     type: 'video-generate',
     title: 'Video Generate',
-    description: 'Generate video clips from images or prompts',
+    description: 'Generate video clips from workflow inputs, with optional workspace panel binding',
     icon: 'Video',
     category: 'media',
     color: '#ef4444',
@@ -221,6 +236,13 @@ const VIDEO_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], required: true
         },
         { key: 'model', label: 'Model', type: 'model-picker', required: true },
+        {
+            key: 'artStyle',
+            label: 'Visual Style',
+            type: 'select',
+            options: WORKFLOW_ART_STYLE_OPTIONS,
+            defaultValue: 'japanese-anime',
+        },
         { key: 'duration', label: 'Duration (seconds)', type: 'number', defaultValue: 5 },
         {
             key: 'aspectRatio', label: 'Aspect Ratio', type: 'select', options: [
@@ -228,13 +250,19 @@ const VIDEO_GENERATE_NODE: WorkflowNodeTypeDefinition = {
             ], defaultValue: '16:9'
         },
     ],
-    defaultConfig: { provider: 'kling', model: '', duration: 5, aspectRatio: '16:9' },
+    defaultConfig: {
+        provider: 'kling',
+        model: '',
+        artStyle: 'japanese-anime',
+        duration: 5,
+        aspectRatio: '16:9',
+    },
 }
 
 const VOICE_SYNTHESIS_NODE: WorkflowNodeTypeDefinition = {
     type: 'voice-synthesis',
     title: 'Voice Synthesis',
-    description: 'Generate voice line audio via the production voice task pipeline',
+    description: 'Generate voice audio standalone or bridge into workspace voice-line records',
     icon: 'Mic',
     category: 'media',
     color: '#a855f7',
@@ -246,15 +274,19 @@ const VOICE_SYNTHESIS_NODE: WorkflowNodeTypeDefinition = {
         { id: 'audio', name: 'Audio', type: 'audio', required: true },
     ],
     configFields: [
-        { key: 'episodeId', label: 'Episode ID', type: 'text', placeholder: 'novelPromotion episode id', required: true },
-        { key: 'lineId', label: 'Voice Line ID', type: 'text', placeholder: 'novelPromotion voice line id', required: true },
-        { key: 'audioModel', label: 'Audio Model (Optional)', type: 'model-picker', required: false },
+        { key: 'episodeId', label: 'Episode ID (Workspace Bridge)', type: 'text', placeholder: 'Optional: novelPromotion episode id', required: false },
+        { key: 'lineId', label: 'Voice Line ID (Workspace Bridge)', type: 'text', placeholder: 'Optional: novelPromotion voice line id', required: false },
+        { key: 'audioModel', label: 'Audio Model', type: 'model-picker', required: false },
+        { key: 'voice', label: 'Voice (Standalone)', type: 'text', placeholder: 'default', required: false },
+        { key: 'rate', label: 'Rate (Standalone)', type: 'number', defaultValue: 1 },
         { key: 'updateLineContentFromInput', label: 'Update line content from input text', type: 'toggle', defaultValue: true },
     ],
     defaultConfig: {
         episodeId: '',
         lineId: '',
         audioModel: '',
+        voice: 'default',
+        rate: 1,
         updateLineContentFromInput: true,
     },
 }

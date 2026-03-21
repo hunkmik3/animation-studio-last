@@ -14,7 +14,7 @@ function createContext(params: {
     projectId: 'project_1',
     userId: 'user_1',
     locale: 'en',
-    projectModelConfig: {
+    modelConfig: {
       analysisModel: null,
       characterModel: null,
       locationModel: null,

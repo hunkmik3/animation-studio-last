@@ -195,11 +195,16 @@ export async function handlePanelImageTask(job: Job<TaskJobData>) {
       normalizedUrls: normalizedRefs.map((u) => u.substring(0, 100)),
       panelCharacters: panel.characters,
       panelLocation: panel.location,
-      artStyle: modelConfig.artStyle,
+      artStyle: typeof payload.artStyle === 'string' && payload.artStyle.trim()
+        ? payload.artStyle.trim()
+        : modelConfig.artStyle,
     },
   })
 
-  const artStyle = getArtStylePrompt(modelConfig.artStyle, job.data.locale)
+  const artStyleKey = typeof payload.artStyle === 'string' && payload.artStyle.trim()
+    ? payload.artStyle.trim()
+    : modelConfig.artStyle
+  const artStyle = getArtStylePrompt(artStyleKey, job.data.locale)
   if (!projectData.videoRatio) throw new Error('Project videoRatio not configured')
   const aspectRatio = projectData.videoRatio
 

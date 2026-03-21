@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireProjectAuthLight, isErrorResponse } from '@/lib/api-auth'
+import { requireProjectAuthLight, requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { apiHandler, ApiError, getRequestId } from '@/lib/api-errors'
 import { resolveRequiredTaskLocale } from '@/lib/task/resolve-locale'
-import { getProjectModelConfig } from '@/lib/config-service'
+import { getWorkflowExecutionModelConfig } from '@/lib/config-service'
 import { NODE_EXECUTOR_REGISTRY } from '@/lib/workflow-engine/executors'
-import { getUnsupportedNodeExecutionMessage } from '@/lib/workflow-engine/execution-support'
+import {
+    getUnsupportedNodeExecutionMessage,
+    usesWorkspaceExecutionContext,
+} from '@/lib/workflow-engine/execution-support'
 import type { NodeExecutorContext } from '@/lib/workflow-engine/executors'
 
 // =============================================
@@ -17,7 +20,7 @@ import type { NodeExecutorContext } from '@/lib/workflow-engine/executors'
 interface ExecuteNodeBody {
     nodeType: string
     nodeId: string
-    projectId: string
+    projectId?: string
     config: Record<string, unknown>
     inputs?: Record<string, unknown>
     panelId?: string
@@ -26,20 +29,19 @@ interface ExecuteNodeBody {
 export const POST = apiHandler(async (request: NextRequest) => {
     // ── Parse request ──
     const body: ExecuteNodeBody = await request.json()
-    const { nodeType, nodeId, projectId, config, inputs, panelId } = body
+    const { nodeType, nodeId, config, inputs, panelId } = body
+    const projectId = typeof body.projectId === 'string' && body.projectId.trim().length > 0
+        ? body.projectId.trim()
+        : ''
+    const usesWorkspaceContext = usesWorkspaceExecutionContext({
+        nodeType,
+        panelId,
+        config,
+    })
 
-    if (!nodeType || !nodeId || !projectId) {
-        throw new ApiError('INVALID_PARAMS', { message: 'nodeType, nodeId, and projectId are required' })
+    if (!nodeType || !nodeId) {
+        throw new ApiError('INVALID_PARAMS', { message: 'nodeType and nodeId are required' })
     }
-
-    // ── Auth ──
-    const authResult = await requireProjectAuthLight(projectId)
-    if (isErrorResponse(authResult)) return authResult
-    const { session } = authResult
-
-    // ── Resolve context ──
-    const locale = resolveRequiredTaskLocale(request, body)
-    const projectModelConfig = await getProjectModelConfig(projectId, session.user.id)
 
     // ── Lookup executor ──
     const executor = NODE_EXECUTOR_REGISTRY[nodeType]
@@ -49,16 +51,36 @@ export const POST = apiHandler(async (request: NextRequest) => {
         })
     }
 
+    if (usesWorkspaceContext && !projectId) {
+        throw new ApiError('INVALID_PARAMS', {
+            message: `Node "${nodeType}" requires projectId because it is currently bound to workspace data.`,
+        })
+    }
+
+    // ── Auth ──
+    const authResult = usesWorkspaceContext && projectId
+        ? await requireProjectAuthLight(projectId)
+        : await requireUserAuth()
+    if (isErrorResponse(authResult)) return authResult
+    const { session } = authResult
+
+    // ── Resolve context ──
+    const locale = resolveRequiredTaskLocale(request, body)
+    const modelConfig = await getWorkflowExecutionModelConfig({
+        projectId: usesWorkspaceContext ? projectId : null,
+        userId: session.user.id,
+    })
+
     // ── Build execution context ──
     const ctx: NodeExecutorContext = {
         nodeId,
         nodeType,
         config: config || {},
         inputs: inputs || {},
-        projectId,
+        projectId: usesWorkspaceContext ? projectId : null,
         userId: session.user.id,
         locale,
-        projectModelConfig,
+        modelConfig,
         panelId,
         requestId: getRequestId(request),
     }

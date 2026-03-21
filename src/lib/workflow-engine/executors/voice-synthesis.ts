@@ -6,7 +6,12 @@ import { withTaskUiPayload } from '@/lib/task/ui-payload'
 import { estimateVoiceLineMaxSeconds } from '@/lib/voice/generate-voice-line'
 import { hasVoiceLineAudioOutput } from '@/lib/task/has-output'
 import { parseModelKeyStrict } from '@/lib/model-config-contract'
+import { generateAudio } from '@/lib/generator-api'
 import type { NodeExecutor } from './types'
+import {
+  persistStandaloneGeneratedMedia,
+  resolveStandaloneGeneratedMediaSource,
+} from './standalone-generation'
 
 type CharacterVoiceRow = {
   name: string
@@ -56,6 +61,12 @@ function readConfigString(config: Record<string, unknown>, key: string): string 
   return raw.trim()
 }
 
+function readOptionalRate(config: Record<string, unknown>): number | null {
+  const raw = config.rate
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null
+  return raw
+}
+
 /**
  * Voice Synthesis executor — production bridge to VOICE_LINE worker pipeline.
  *
@@ -70,17 +81,67 @@ export const executeVoiceSynthesis: NodeExecutor = async (ctx) => {
   const episodeId = readConfigString(ctx.config, 'episodeId')
   const lineId = readConfigString(ctx.config, 'lineId')
   const audioModel = readConfigString(ctx.config, 'audioModel')
+  const voice = readConfigString(ctx.config, 'voice')
+  const rate = readOptionalRate(ctx.config)
   const updateLineContentFromInput = ctx.config.updateLineContentFromInput !== false
   const inputText = typeof ctx.inputs.text === 'string' ? ctx.inputs.text.trim() : ''
 
-  if (!episodeId) {
-    throw new Error('Voice synthesis requires episodeId in node settings.')
-  }
-  if (!lineId) {
-    throw new Error('Voice synthesis requires lineId in node settings.')
-  }
   if (audioModel && !parseModelKeyStrict(audioModel)) {
     throw new Error('Audio model key is invalid. Use provider::modelId format.')
+  }
+
+  const usesWorkspaceContext = episodeId.length > 0 || lineId.length > 0
+  if (usesWorkspaceContext && (!episodeId || !lineId)) {
+    throw new Error('Voice synthesis has a partial workspace binding. Set both episodeId and lineId or clear both to run standalone.')
+  }
+
+  if (!usesWorkspaceContext) {
+    if (!audioModel) {
+      throw new Error('Standalone voice synthesis requires audioModel in node settings.')
+    }
+    if (!inputText) {
+      throw new Error('Standalone voice synthesis requires text input.')
+    }
+
+    const result = await generateAudio(ctx.userId, audioModel, inputText, {
+      ...(voice ? { voice } : {}),
+      ...(rate !== null ? { rate } : {}),
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Voice synthesis failed')
+    }
+
+    const resolved = await resolveStandaloneGeneratedMediaSource({
+      result,
+      userId: ctx.userId,
+      mediaType: 'audio',
+    })
+    const mediaRef = await persistStandaloneGeneratedMedia({
+      nodeId: ctx.nodeId,
+      nodeType: ctx.nodeType,
+      mediaType: 'audio',
+      source: resolved.source,
+      ...(resolved.downloadHeaders ? { downloadHeaders: resolved.downloadHeaders } : {}),
+    })
+
+    return {
+      outputs: {
+        audio: mediaRef.url,
+        audioUrl: mediaRef.url,
+        audioMediaId: mediaRef.id,
+        content: inputText,
+      },
+      message: 'Voice generated',
+      metadata: {
+        mode: 'standalone',
+        audioModel,
+        voice: voice || null,
+        rate,
+      },
+    }
+  }
+  if (!ctx.projectId) {
+    throw new Error('Voice synthesis workspace bridge requires projectId.')
   }
 
   const projectData = await prisma.novelPromotionProject.findUnique({

@@ -311,7 +311,7 @@ function OutputTabContent({
       return (
         <div className="space-y-3">
           <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
-            {`${nodeLabel} cannot run because this node is workspace-linked and ${contextIssue.missing.join(' + ')} is not linked.`}
+            {`${nodeLabel} cannot run because ${contextIssue.missing.join(' + ')} is incomplete.`}
             <div className="mt-2 text-red-100">
               {getWorkspaceContextActionHint(nodeType)}
             </div>
@@ -327,7 +327,7 @@ function OutputTabContent({
     if (executionState?.status === 'running') {
       return (
         <div className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-4 text-sm text-blue-200">
-          Node đang chạy và đang chờ output thật từ pipeline production. Khi output usable xuất hiện, panel sẽ tự cập nhật.
+          Node đang chạy và đang chờ output thật từ execution pipeline. Khi output usable xuất hiện, panel sẽ tự cập nhật.
         </div>
       )
     }

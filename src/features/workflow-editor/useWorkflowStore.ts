@@ -20,6 +20,7 @@ import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import {
     getUnsupportedNodeExecutionMessage,
     isNodeTypeExecutionSupported,
+    usesWorkspaceExecutionContext,
 } from '@/lib/workflow-engine/execution-support'
 import type { ExecutionStatus, NodeExecutionState } from '@/lib/workflow-engine/types'
 import type { WorkflowContinuationMarker } from '@/lib/workflow-engine/continuation'
@@ -33,6 +34,15 @@ import {
     collectWorkflowExecutionContextIssues,
     resolveWorkflowNodeContextIssue,
 } from './workspace-boundary'
+import {
+    buildStoryboardPanelGraph,
+    collectStoryboardDerivedNodeIds,
+    extractCharacterReferenceSeeds,
+    extractStoryboardPanelsFromOutputs,
+    extractStoryboardSceneReferenceSeeds,
+} from './storyboard-materialization'
+import { collectWorkflowNodeInputs } from '@/lib/workflow-engine/input-collection'
+import { normalizeWorkflowArtStyle } from '@/lib/workflow-engine/art-style'
 
 // ── Topological sort for workflow execution order ──
 function topologicalSort(nodes: Node[], edges: Edge[]): string[] {
@@ -72,6 +82,51 @@ function toRecord(value: unknown): Record<string, unknown> {
 
 function readStringValue(value: unknown): string {
     return typeof value === 'string' ? value.trim() : ''
+}
+
+function resolveNodeOutputsForMaterialization(params: {
+    nodeId: string
+    nodes: Node[]
+    nodeExecutionStates: Record<string, NodeExecutionState>
+    nodeOutputs: Record<string, Record<string, unknown>>
+}): Record<string, unknown> {
+    const executionOutputs = toRecord(params.nodeExecutionStates[params.nodeId]?.outputs)
+    if (Object.keys(executionOutputs).length > 0) return executionOutputs
+
+    const storeOutputs = toRecord(params.nodeOutputs[params.nodeId])
+    if (Object.keys(storeOutputs).length > 0) return storeOutputs
+
+    const node = params.nodes.find((item) => item.id === params.nodeId)
+    return toRecord(toRecord(node?.data).initialOutput)
+}
+
+function resolveConnectedMaterializationValue(params: {
+    targetNodeId: string
+    targetHandle: string
+    nodes: Node[]
+    edges: Edge[]
+    nodeExecutionStates: Record<string, NodeExecutionState>
+    nodeOutputs: Record<string, Record<string, unknown>>
+}): unknown {
+    const matches = params.edges.filter((edge) =>
+        edge.target === params.targetNodeId
+        && (typeof edge.targetHandle === 'string' ? edge.targetHandle : '') === params.targetHandle,
+    )
+
+    for (const edge of matches) {
+        const sourceHandle = typeof edge.sourceHandle === 'string' ? edge.sourceHandle : ''
+        if (!sourceHandle) continue
+        const outputs = resolveNodeOutputsForMaterialization({
+            nodeId: edge.source,
+            nodes: params.nodes,
+            nodeExecutionStates: params.nodeExecutionStates,
+            nodeOutputs: params.nodeOutputs,
+        })
+        const value = outputs[sourceHandle]
+        if (value !== undefined) return value
+    }
+
+    return undefined
 }
 
 function enrichOutputsWithExecutionMeta(params: {
@@ -184,6 +239,7 @@ interface WorkflowStore {
     }) => void
     forceRerunNode: (nodeId: string) => Promise<void>
     forceRerunAll: () => Promise<void>
+    materializeStoryboardNode: (nodeId: string) => void
 
     // ── Serialization ──
     toJSON: () => { nodes: Node[]; edges: Edge[] }
@@ -893,18 +949,14 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
         }
 
         // ── Collect inputs from connected upstream nodes ──
-        const inputs: Record<string, unknown> = {}
         const incomingEdges = get().edges.filter(e => e.target === nodeId)
         const currentOutputs = get().nodeOutputs
-        for (const edge of incomingEdges) {
-            const sourceOutputs = currentOutputs[edge.source]
-            const sourceHandle = typeof edge.sourceHandle === 'string' ? edge.sourceHandle : ''
-            if (sourceOutputs && sourceHandle) {
-                const targetHandle = typeof edge.targetHandle === 'string' ? edge.targetHandle : sourceHandle
-                const value = sourceOutputs[sourceHandle]
-                if (value !== undefined) inputs[targetHandle] = value
-            }
-        }
+        const inputs = collectWorkflowNodeInputs({
+            nodeId,
+            nodeType,
+            edges: incomingEdges,
+            nodeOutputs: currentOutputs,
+        })
 
         const persistState = (nodeState: NodeExecutionState, outputs?: Record<string, unknown>) => {
             if (!workflowId) return
@@ -989,12 +1041,15 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
         }))
 
         try {
-            // Extract projectId from URL search params
-            const searchParams = new URLSearchParams(window.location.search)
-            const projectId = get().meta?.projectId || searchParams.get('projectId') || ''
-
             // Try to extract panelId if this node is linked to a workspace panel
             const panelId = resolvePanelIdFromNode(nodeId, nodeData)
+            const searchParams = new URLSearchParams(window.location.search)
+            const projectId = get().meta?.projectId || searchParams.get('projectId') || ''
+            const usesWorkspaceContext = usesWorkspaceExecutionContext({
+                nodeType,
+                panelId,
+                config,
+            })
 
             set((s) => ({
                 nodeExecutionStates: {
@@ -1003,17 +1058,23 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
                 }
             }))
 
+            const requestBody: Record<string, unknown> = {
+                nodeType,
+                nodeId,
+                config,
+                inputs,
+            }
+            if (projectId && usesWorkspaceContext) {
+                requestBody.projectId = projectId
+            }
+            if (panelId) {
+                requestBody.panelId = panelId
+            }
+
             const res = await fetch('/api/workflows/execute-node', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    nodeType,
-                    nodeId,
-                    projectId,
-                    config,
-                    inputs,
-                    panelId,
-                }),
+                body: JSON.stringify(requestBody),
             })
 
             const result = toRecord(await res.json())
@@ -1424,6 +1485,73 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
             continuationInFlightKey: null,
         })
         await get().executeWorkflow()
+    },
+
+    materializeStoryboardNode: (nodeId: string) => {
+        const state = get()
+        const storyboardNode = state.nodes.find((node) => node.id === nodeId)
+        if (!storyboardNode) return
+
+        const nodeData = toRecord(storyboardNode.data)
+        const nodeType = typeof nodeData.nodeType === 'string' ? nodeData.nodeType : ''
+        if (nodeType !== 'storyboard') return
+
+        const executionOutputs = toRecord(state.nodeExecutionStates[nodeId]?.outputs)
+        const storeOutputs = toRecord(state.nodeOutputs[nodeId])
+        const initialOutput = toRecord(nodeData.initialOutput)
+        const outputs = Object.keys(executionOutputs).length > 0
+            ? executionOutputs
+            : Object.keys(storeOutputs).length > 0
+                ? storeOutputs
+                : initialOutput
+        const panels = extractStoryboardPanelsFromOutputs(outputs)
+        if (panels.length === 0) {
+            throw new Error('Storyboard node has no materializable panels yet. Run storyboard first.')
+        }
+        const characterReferences = extractCharacterReferenceSeeds(
+            resolveConnectedMaterializationValue({
+                targetNodeId: nodeId,
+                targetHandle: 'characters',
+                nodes: state.nodes,
+                edges: state.edges,
+                nodeExecutionStates: state.nodeExecutionStates,
+                nodeOutputs: state.nodeOutputs,
+            }),
+        )
+        const sceneReferences = extractStoryboardSceneReferenceSeeds(
+            resolveConnectedMaterializationValue({
+                targetNodeId: nodeId,
+                targetHandle: 'scenes',
+                nodes: state.nodes,
+                edges: state.edges,
+                nodeExecutionStates: state.nodeExecutionStates,
+                nodeOutputs: state.nodeOutputs,
+            }),
+        )
+
+        const derivedNodeIds = collectStoryboardDerivedNodeIds(state.nodes, nodeId)
+        const nextNodes = state.nodes.filter((node) => !derivedNodeIds.has(node.id))
+        const nextEdges = state.edges.filter((edge) => !derivedNodeIds.has(edge.source) && !derivedNodeIds.has(edge.target))
+        const storyboardConfig = toRecord(nodeData.config)
+        const builtGraph = buildStoryboardPanelGraph({
+            storyboardNodeId: nodeId,
+            storyboardNodeLabel: typeof nodeData.label === 'string' && nodeData.label.trim().length > 0
+                ? nodeData.label.trim()
+                : nodeId,
+            storyboardPosition: storyboardNode.position,
+            panels,
+            characterReferences,
+            sceneReferences,
+            artStyle: normalizeWorkflowArtStyle(storyboardConfig.style),
+        })
+
+        set((s) => ({
+            nodes: [...nextNodes, ...builtGraph.nodes],
+            edges: [...nextEdges, ...builtGraph.edges],
+            selectedNodeId: builtGraph.groupId,
+            meta: { ...s.meta, isSaved: false },
+        }))
+        void invalidateRecoverableContinuationInternal('Storyboard panels were materialized into workflow nodes. Saved continuation is stale.')
     },
 
     // ── Serialization ──
