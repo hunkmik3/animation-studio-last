@@ -9,6 +9,7 @@ import {
   resolveModelCapabilityGenerationOptions,
 } from '@/lib/config-service'
 import { generateImage } from '@/lib/generator-api'
+import type { MediaRef } from '@/lib/media/types'
 import {
   applyWorkflowArtStyleToPrompt,
   resolveWorkflowArtStylePrompt,
@@ -33,6 +34,12 @@ function readOptionalStringInput(inputs: Record<string, unknown>, key: string): 
 function readOptionalNumberConfig(config: Record<string, unknown>, key: string): number | null {
   const raw = config[key]
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+function readCandidateCount(config: Record<string, unknown>): number {
+  const rawValue = readOptionalNumberConfig(config, 'candidateCount') ?? readOptionalNumberConfig(config, 'count') ?? 1
+  const normalized = Math.floor(rawValue)
+  return Math.max(1, Math.min(4, normalized))
 }
 
 /**
@@ -76,6 +83,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
       locale: ctx.locale,
       mode: 'image',
     })
+    const candidateCount = readCandidateCount(ctx.config)
 
     const userConfig = await getUserModelConfig(ctx.userId)
     const runtimeSelections: Record<string, string | number | boolean> = {}
@@ -91,34 +99,45 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     const aspectRatio = readConfigString(ctx.config, 'aspectRatio')
     const negativePrompt = readConfigString(ctx.config, 'negativePrompt')
     const referenceImages = await normalizeStandaloneMediaInput(ctx.inputs.reference)
-    const result = await generateImage(ctx.userId, imageModel, prompt, {
-      ...(referenceImages.length > 0 ? { referenceImages } : {}),
-      ...(aspectRatio ? { aspectRatio } : {}),
-      ...(negativePrompt ? { negativePrompt } : {}),
-      ...capabilityOptions,
-    })
-    if (!result.success) {
-      throw new Error(result.error || 'Image generation failed')
+    const mediaRefs: MediaRef[] = []
+    for (let index = 0; index < candidateCount; index += 1) {
+      const result = await generateImage(ctx.userId, imageModel, prompt, {
+        ...(referenceImages.length > 0 ? { referenceImages } : {}),
+        ...(aspectRatio ? { aspectRatio } : {}),
+        ...(negativePrompt ? { negativePrompt } : {}),
+        ...capabilityOptions,
+      })
+      if (!result.success) {
+        throw new Error(result.error || 'Image generation failed')
+      }
+
+      const resolved = await resolveStandaloneGeneratedMediaSource({
+        result,
+        userId: ctx.userId,
+        mediaType: 'image',
+      })
+      const mediaRef = await persistStandaloneGeneratedMedia({
+        nodeId: `${ctx.nodeId}_${index + 1}`,
+        nodeType: ctx.nodeType,
+        mediaType: 'image',
+        source: resolved.source,
+        ...(resolved.downloadHeaders ? { downloadHeaders: resolved.downloadHeaders } : {}),
+      })
+      mediaRefs.push(mediaRef)
     }
 
-    const resolved = await resolveStandaloneGeneratedMediaSource({
-      result,
-      userId: ctx.userId,
-      mediaType: 'image',
-    })
-    const mediaRef = await persistStandaloneGeneratedMedia({
-      nodeId: ctx.nodeId,
-      nodeType: ctx.nodeType,
-      mediaType: 'image',
-      source: resolved.source,
-      ...(resolved.downloadHeaders ? { downloadHeaders: resolved.downloadHeaders } : {}),
-    })
+    const primaryMedia = mediaRefs[0]
+    if (!primaryMedia) {
+      throw new Error('Image generation returned no media output.')
+    }
+    const candidateImages = mediaRefs.map((mediaRef) => mediaRef.url)
 
     return {
       outputs: {
-        image: mediaRef.url,
-        imageUrl: mediaRef.url,
-        imageMediaId: mediaRef.id,
+        image: primaryMedia.url,
+        imageUrl: primaryMedia.url,
+        imageMediaId: primaryMedia.id,
+        ...(candidateImages.length > 1 ? { candidateImages } : {}),
         usedPrompt: prompt,
       },
       message: 'Image generated',
@@ -126,6 +145,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
         mode: 'standalone',
         imageModel,
         referenceImageCount: referenceImages.length,
+        candidateCount: candidateImages.length,
         resolution: runtimeSelections.resolution || null,
         aspectRatio: aspectRatio || null,
         negativePrompt: negativePrompt || null,
@@ -155,6 +175,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     ? ctx.config.customPrompt.trim()
     : undefined
   const { artStyle } = resolveWorkflowArtStylePrompt(ctx.config.artStyle, ctx.locale)
+  const candidateCount = readCandidateCount(ctx.config)
 
   let billingPayload: Record<string, unknown>
   try {
@@ -175,6 +196,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
   if (artStyle) {
     billingPayload.artStyle = artStyle
   }
+  billingPayload.candidateCount = candidateCount
 
   const result = await submitTask({
     userId: ctx.userId,
@@ -185,7 +207,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     targetType: 'NovelPromotionPanel',
     targetId: ctx.panelId,
     payload: withTaskUiPayload(billingPayload, { hasOutputAtStart: !!panel.imageUrl }),
-    dedupeKey: `workflow:image:${ctx.nodeId}:${ctx.panelId}`,
+    dedupeKey: `workflow:image:${ctx.nodeId}:${ctx.panelId}:${candidateCount}`,
     billingInfo: buildDefaultTaskBillingInfo(TASK_TYPE.IMAGE_PANEL, billingPayload),
   })
 
@@ -194,6 +216,12 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     async: true,
     taskId: result.taskId,
     message: 'Image generation task submitted',
-    metadata: { imageModel, panelId: ctx.panelId, deduped: result.deduped, artStyle: artStyle || null },
+    metadata: {
+      imageModel,
+      panelId: ctx.panelId,
+      deduped: result.deduped,
+      artStyle: artStyle || null,
+      candidateCount,
+    },
   }
 }

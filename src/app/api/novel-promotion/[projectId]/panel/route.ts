@@ -23,6 +23,17 @@ function toStructuredJsonField(value: unknown, fieldName: string): string | null
   }
 }
 
+function parseCandidateImages(jsonValue: string | null): string[] {
+  if (!jsonValue) return []
+  try {
+    const parsed = JSON.parse(jsonValue)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+  } catch {
+    return []
+  }
+}
+
 /**
  * GET /api/novel-promotion/[projectId]/panel?panelId=...
  * 获取单个 Panel（工作流监控用于同步真实 media output）
@@ -57,6 +68,8 @@ export const GET = apiHandler(async (
       id: true,
       imageUrl: true,
       videoUrl: true,
+      previousImageUrl: true,
+      candidateImages: true,
     }
   })
 
@@ -70,6 +83,8 @@ export const GET = apiHandler(async (
       id: panel.id,
       imageUrl: panel.imageUrl,
       videoUrl: panel.videoUrl,
+      previousImageUrl: panel.previousImageUrl,
+      candidateImages: parseCandidateImages(panel.candidateImages),
     }
   })
 })

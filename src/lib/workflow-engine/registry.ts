@@ -205,6 +205,7 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
         provider: 'flux',
         model: '',
         artStyle: 'japanese-anime',
+        candidateCount: 1,
         customPrompt: '',
         negativePrompt: '',
         aspectRatio: '16:9',

@@ -340,6 +340,8 @@ export interface WorkflowPanelResponse {
     id: string
     imageUrl: string | null
     videoUrl: string | null
+    previousImageUrl: string | null
+    candidateImages: string[]
 }
 
 export async function fetchPanel(projectId: string, panelId: string): Promise<{ panel: WorkflowPanelResponse }> {

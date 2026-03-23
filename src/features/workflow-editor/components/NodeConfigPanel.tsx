@@ -13,17 +13,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 import { useWorkflowStore } from '../useWorkflowStore'
-import { fetchWorkflowWorkspaceContext } from '@/features/workflow-editor/api'
-import { resolvePanelIdFromNode } from '@/features/workflow-editor/execution-contract'
+import { fetchPanel, fetchWorkflowWorkspaceContext } from '@/features/workflow-editor/api'
+import { resolvePanelIdFromNode, toNodeInitialOutput } from '@/features/workflow-editor/execution-contract'
 import { extractStoryboardPanelsFromOutputs } from '@/features/workflow-editor/storyboard-materialization'
+import { getWorkflowModelPickerOptions, resolveWorkflowModelPickerMediaType } from '@/features/workflow-editor/model-picker'
 import {
     getWorkflowBoundaryDescriptor,
     getWorkspaceContextActionHint,
     resolveWorkflowRuntimeBoundaryDescriptor,
     resolveWorkflowNodeContextIssue,
 } from '@/features/workflow-editor/workspace-boundary'
+import { useUserModels } from '@/lib/query/hooks/useUserModels'
 import { toDisplayImageUrl } from '@/lib/media/image-url'
 import { MediaImageWithLoading } from '@/components/media/MediaImageWithLoading'
+import { ModelCapabilityDropdown } from '@/components/ui/config-modals/ModelCapabilityDropdown'
 import {
     X, Settings2, Video, ImageIcon, Play, ChevronDown, ChevronRight,
     Eye, Pencil, Loader2, CheckCircle2, FileText, Mic, Film,
@@ -66,6 +69,28 @@ function resolveOutputMediaValue(data: Record<string, unknown> | undefined, key:
     if (direct !== undefined && direct !== null) return direct
     const legacy = data[`${key}Url`]
     return legacy
+}
+
+function parseCandidateImages(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value
+            .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+            .map((entry) => entry.trim())
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+        try {
+            return parseCandidateImages(JSON.parse(value))
+        } catch {
+            return []
+        }
+    }
+    return []
+}
+
+function readCandidateCount(config: Record<string, unknown>): number {
+    const rawValue = typeof config.candidateCount === 'number' ? config.candidateCount : 1
+    const normalized = Math.floor(rawValue)
+    return Math.max(1, Math.min(4, normalized))
 }
 
 // ── Section Header (collapsible) ──
@@ -736,6 +761,7 @@ function ImagePromptSection({
 
     const usedPrompt = (outputs?.usedPrompt ?? initialOutput?.usedPrompt) as string | undefined
     const customPrompt = typeof config.customPrompt === 'string' ? config.customPrompt : ''
+    const candidateCount = readCandidateCount(config)
     const hasImage = !!(outputs?.image || initialOutput?.image)
 
     return (
@@ -791,6 +817,34 @@ function ImagePromptSection({
                     )}
                 </div>
 
+                <div>
+                    <label className="block text-[11px] font-medium text-slate-400 mb-1.5 uppercase tracking-wide">
+                        Regenerate Count
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                        {[1, 2, 3, 4].map((count) => (
+                            <button
+                                key={count}
+                                type="button"
+                                onClick={() => onConfigChange('candidateCount', count)}
+                                disabled={isRunning}
+                                className={`px-3 py-2 text-xs rounded-lg border transition-all ${
+                                    candidateCount === count
+                                        ? 'border-blue-400 bg-blue-500/20 text-blue-200'
+                                        : 'border-slate-700 bg-slate-800/70 text-slate-300 hover:border-slate-600'
+                                } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                                {count}
+                            </button>
+                        ))}
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                        {candidateCount > 1
+                            ? `Generate ${candidateCount} image candidates so you can choose the final panel image afterward.`
+                            : 'Generate a single image result.'}
+                    </p>
+                </div>
+
                 {/* Regenerate button */}
                 {hasImage && (
                     <button
@@ -810,11 +864,118 @@ function ImagePromptSection({
                         ) : (
                             <>
                                 <RefreshCw className="w-3.5 h-3.5" />
-                                {customPrompt ? 'Regenerate with Custom Prompt' : 'Regenerate Image'}
+                                {customPrompt
+                                    ? `Regenerate ${candidateCount > 1 ? `${candidateCount} Images` : 'Image'} with Custom Prompt`
+                                    : candidateCount > 1
+                                        ? `Regenerate ${candidateCount} Images`
+                                        : 'Regenerate Image'}
                             </>
                         )}
                     </button>
                 )}
+            </div>
+        </SectionHeader>
+    )
+}
+
+function ImageCandidateSection({
+    nodeType,
+    outputs,
+    initialOutput,
+    onApplyCandidate,
+    isApplying,
+}: {
+    nodeType: string
+    outputs: Record<string, unknown> | undefined
+    initialOutput: Record<string, unknown> | undefined
+    onApplyCandidate: (candidateUrl: string) => Promise<void>
+    isApplying: boolean
+}) {
+    const [selectedCandidateIndex, setSelectedCandidateIndex] = useState(0)
+
+    const candidateImages = parseCandidateImages(outputs?.candidateImages ?? initialOutput?.candidateImages)
+    const currentImage = resolveOutputMediaValue(outputs, 'image') ?? resolveOutputMediaValue(initialOutput, 'image')
+    const previousImage = outputs?.previousImageUrl ?? initialOutput?.previousImageUrl
+
+    useEffect(() => {
+        setSelectedCandidateIndex(0)
+    }, [candidateImages.join('|')])
+
+    if (nodeType !== 'image-generate') return null
+    if (candidateImages.length === 0) return null
+
+    const safeSelectedIndex = Math.min(selectedCandidateIndex, candidateImages.length - 1)
+
+    return (
+        <SectionHeader title="Generated Candidates" icon={ImageIcon} defaultOpen={true}>
+            <div className="space-y-3">
+                <div className="rounded-lg bg-slate-900/70 border border-slate-700 px-3 py-2 text-[11px] text-slate-300">
+                    {previousImage || currentImage
+                        ? 'Your current panel image stays in place until you confirm one of the regenerated candidates.'
+                        : 'Choose which regenerated image should become the panel image.'}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                    {candidateImages.map((candidateUrl, index) => {
+                        const previewUrl = resolveMediaUrl(candidateUrl)
+                        const isSelected = index === safeSelectedIndex
+                        return (
+                            <button
+                                key={`${candidateUrl}_${index}`}
+                                type="button"
+                                onClick={() => setSelectedCandidateIndex(index)}
+                                className={`rounded-xl border p-1 transition-all text-left ${
+                                    isSelected
+                                        ? 'border-blue-400 bg-blue-500/10 shadow-lg shadow-blue-500/10'
+                                        : 'border-slate-700 bg-slate-900/60 hover:border-slate-500'
+                                }`}
+                            >
+                                <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+                                    <MediaImageWithLoading
+                                        src={previewUrl}
+                                        alt={`Candidate ${index + 1}`}
+                                        containerClassName="w-full h-28"
+                                        className="w-full h-28 object-cover"
+                                    />
+                                </div>
+                                <div className="mt-2 flex items-center justify-between px-1 pb-1">
+                                    <span className="text-[11px] font-medium text-slate-200">
+                                        {`Candidate ${index + 1}`}
+                                    </span>
+                                    {isSelected && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] text-blue-300">
+                                            <CheckCircle2 className="w-3 h-3" />
+                                            Selected
+                                        </span>
+                                    )}
+                                </div>
+                            </button>
+                        )
+                    })}
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => onApplyCandidate(candidateImages[safeSelectedIndex])}
+                    disabled={isApplying}
+                    className={`flex items-center justify-center gap-2 w-full px-3 py-2 text-xs font-medium rounded-lg transition-all ${
+                        isApplying
+                            ? 'bg-slate-700/50 text-slate-500 cursor-not-allowed'
+                            : 'bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                    }`}
+                >
+                    {isApplying ? (
+                        <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Applying...
+                        </>
+                    ) : (
+                        <>
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {`Use Candidate ${safeSelectedIndex + 1}`}
+                        </>
+                    )}
+                </button>
             </div>
         </SectionHeader>
     )
@@ -866,6 +1027,7 @@ function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
     nodeData: { config: Record<string, unknown>; nodeType?: string }
     onConfigChange: (key: string, value: unknown) => void
 }) {
+    const userModelsQuery = useUserModels()
     // Hide customPrompt from settings — it has its own dedicated section in ImagePromptSection
     const visibleFields = def.configFields.filter((field: any) => {
         if (field.key === 'customPrompt' && nodeData.nodeType === 'image-generate') return false
@@ -948,12 +1110,42 @@ function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
                                 </select>
                             )}
 
-                            {(field.type === 'model-picker' || field.type === 'voice-picker') && (
+                            {field.type === 'model-picker' && (() => {
+                                const mediaType = resolveWorkflowModelPickerMediaType(nodeData.nodeType, field.key)
+                                const modelOptions = getWorkflowModelPickerOptions(userModelsQuery.data, mediaType)
+                                const placeholder = userModelsQuery.isLoading
+                                    ? 'Loading models...'
+                                    : modelOptions.length > 0
+                                        ? 'Select a model'
+                                        : `No enabled ${mediaType} models`
+
+                                return (
+                                    <div className="space-y-2">
+                                        <ModelCapabilityDropdown
+                                            models={modelOptions}
+                                            value={typeof value === 'string' ? value : ''}
+                                            onModelChange={(nextModelKey) => onConfigChange(field.key, nextModelKey)}
+                                            capabilityFields={[]}
+                                            capabilityOverrides={{}}
+                                            onCapabilityChange={() => {}}
+                                            placeholder={placeholder}
+                                            compact={true}
+                                        />
+                                        {!userModelsQuery.isLoading && modelOptions.length === 0 && (
+                                            <p className="text-[10px] leading-relaxed text-amber-400">
+                                                {`No enabled ${mediaType} models are available yet. Add one in Profile > API Config first.`}
+                                            </p>
+                                        )}
+                                    </div>
+                                )
+                            })()}
+
+                            {field.type === 'voice-picker' && (
                                 <input
                                     type="text"
                                     value={String(value)}
                                     onChange={(e) => onConfigChange(field.key, e.target.value)}
-                                    placeholder={field.type === 'model-picker' ? 'e.g., gpt-4o, gemini-2.0-flash' : 'Voice preset name or ID'}
+                                    placeholder="Voice preset name or ID"
                                     className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-all"
                                 />
                             )}
@@ -997,6 +1189,8 @@ export function NodeConfigPanel() {
     const updateNodeConfig = useWorkflowStore((s) => s.updateNodeConfig)
     const updateNodeData = useWorkflowStore((s) => s.updateNodeData)
     const executeSingleNode = useWorkflowStore((s) => s.executeSingleNode)
+    const setNodeOutput = useWorkflowStore((s) => s.setNodeOutput)
+    const setNodeExecutionState = useWorkflowStore((s) => s.setNodeExecutionState)
     const materializeStoryboardNode = useWorkflowStore((s) => s.materializeStoryboardNode)
     const projectId = useWorkflowStore((s) => s.meta.projectId)
     const loadFromJSON = useWorkflowStore((s) => s.loadFromJSON)
@@ -1012,6 +1206,7 @@ export function NodeConfigPanel() {
     const [workspaceContextData, setWorkspaceContextData] = useState<WorkspaceBindingContextData | null>(null)
     const [workspaceContextLoading, setWorkspaceContextLoading] = useState(false)
     const [workspaceContextError, setWorkspaceContextError] = useState<string | null>(null)
+    const [candidateApplyPending, setCandidateApplyPending] = useState(false)
 
     const handleConfigChange = useCallback(
         (key: string, value: unknown) => {
@@ -1135,6 +1330,83 @@ export function NodeConfigPanel() {
         }
     }, [materializeStoryboardNode, selectedNodeId])
 
+    const handleApplyCandidateImage = useCallback(async (candidateUrl: string) => {
+        if (!selectedNodeId || !nodeData || nodeData.nodeType !== 'image-generate') return
+
+        const currentOutputs = (executionState?.outputs as Record<string, unknown> | undefined) || nodeData.initialOutput || {}
+        const currentImage = resolveOutputMediaValue(currentOutputs, 'image')
+        const panelId = resolvePanelIdFromNode(selectedNodeId, nodeData as unknown as Record<string, unknown>)
+
+        setCandidateApplyPending(true)
+        setWorkspaceContextError(null)
+
+        try {
+            let nextOutputs: Record<string, unknown>
+
+            if (projectId && panelId) {
+                const response = await fetch(`/api/novel-promotion/${projectId}/panel/select-candidate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        panelId,
+                        selectedImageUrl: candidateUrl,
+                        action: 'select',
+                    }),
+                })
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => ({}))
+                    throw new Error(
+                        typeof payload?.message === 'string' && payload.message.trim().length > 0
+                            ? payload.message
+                            : 'Failed to apply selected candidate',
+                    )
+                }
+
+                const { panel } = await fetchPanel(projectId, panelId)
+                nextOutputs = {
+                    ...(typeof currentOutputs.usedPrompt === 'string' ? { usedPrompt: currentOutputs.usedPrompt } : {}),
+                    ...(typeof currentOutputs._parityNotes === 'string' ? { _parityNotes: currentOutputs._parityNotes } : {}),
+                    ...(currentOutputs._metadata ? { _metadata: currentOutputs._metadata } : {}),
+                    image: panel.imageUrl,
+                    imageUrl: panel.imageUrl,
+                    ...(typeof panel.previousImageUrl === 'string' && panel.previousImageUrl.trim().length > 0
+                        ? { previousImageUrl: panel.previousImageUrl }
+                        : {}),
+                    ...(panel.candidateImages.length > 0 ? { candidateImages: panel.candidateImages } : {}),
+                }
+            } else {
+                nextOutputs = { ...currentOutputs }
+                nextOutputs.image = candidateUrl
+                nextOutputs.imageUrl = candidateUrl
+                if (typeof currentImage === 'string' && currentImage.trim().length > 0 && currentImage !== candidateUrl) {
+                    nextOutputs.previousImageUrl = currentImage
+                } else {
+                    delete nextOutputs.previousImageUrl
+                }
+                delete nextOutputs.candidateImages
+            }
+
+            setNodeOutput(selectedNodeId, nextOutputs)
+            setNodeExecutionState(selectedNodeId, {
+                status: 'completed',
+                progress: 100,
+                message: 'Done',
+                completedAt: executionState?.completedAt || new Date().toISOString(),
+                outputs: nextOutputs,
+            })
+            updateNodeData(selectedNodeId, {
+                initialOutput: toNodeInitialOutput(nodeData.initialOutput || {}, nextOutputs),
+            })
+        } catch (error) {
+            const message = error instanceof Error && error.message.trim().length > 0
+                ? error.message
+                : 'Failed to apply selected candidate'
+            setWorkspaceContextError(message)
+        } finally {
+            setCandidateApplyPending(false)
+        }
+    }, [executionState?.completedAt, executionState?.outputs, nodeData, projectId, selectedNodeId, setNodeExecutionState, setNodeOutput, updateNodeData])
+
     // ── Empty state ──
     if (!selectedNode || !def || !nodeData) {
         return (
@@ -1247,6 +1519,13 @@ export function NodeConfigPanel() {
                 <ImagePreviewSection
                     outputs={executionState?.outputs}
                     initialOutput={nodeData.initialOutput}
+                />
+                <ImageCandidateSection
+                    nodeType={nodeData.nodeType}
+                    outputs={executionState?.outputs as Record<string, unknown> | undefined}
+                    initialOutput={nodeData.initialOutput}
+                    onApplyCandidate={handleApplyCandidateImage}
+                    isApplying={candidateApplyPending}
                 />
                 <ImagePromptSection
                     nodeType={nodeData.nodeType}

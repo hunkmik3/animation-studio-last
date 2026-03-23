@@ -33,8 +33,14 @@ describe('workflow execution contract', () => {
       normalizeMediaOutputsForNode('image-generate', {
         imageUrl: 'https://cdn.example/i.png',
         videoUrl: null,
+        previousImageUrl: 'https://cdn.example/previous.png',
+        candidateImages: ['https://cdn.example/candidate-1.png', 'https://cdn.example/candidate-2.png'],
       }),
-    ).toEqual({ image: 'https://cdn.example/i.png' })
+    ).toEqual({
+      image: 'https://cdn.example/i.png',
+      previousImageUrl: 'https://cdn.example/previous.png',
+      candidateImages: ['https://cdn.example/candidate-1.png', 'https://cdn.example/candidate-2.png'],
+    })
 
     expect(
       normalizeMediaOutputsForNode('video-generate', {

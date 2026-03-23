@@ -142,7 +142,7 @@ describe('workflow media executors standalone behavior', () => {
       source: 'https://cdn.example.com/generated.jpg',
       type: 'image',
       keyPrefix: 'workflow/image-generate',
-      targetId: 'node_1',
+      targetId: 'node_1_1',
     }))
     expect(mockSubmitTask).not.toHaveBeenCalled()
     expect(result).toEqual(expect.objectContaining({
@@ -184,6 +184,70 @@ describe('workflow media executors standalone behavior', () => {
         referenceImages: ['/m/character-ref', '/m/scene-ref'],
       }),
     )
+  })
+
+  it('returns candidateImages for standalone image generation when candidateCount is greater than one', async () => {
+    mockGenerateImage.mockResolvedValue({
+      success: true,
+      imageUrl: 'https://cdn.example.com/generated-candidate.jpg',
+    })
+    mockProcessMediaResult
+      .mockResolvedValueOnce('workflow/media/object-1')
+      .mockResolvedValueOnce('workflow/media/object-2')
+      .mockResolvedValueOnce('workflow/media/object-3')
+    mockEnsureMediaObjectFromStorageKey
+      .mockResolvedValueOnce({
+        id: 'media_1',
+        publicId: 'pub_1',
+        url: '/m/pub_1',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+        width: 1024,
+        height: 1024,
+        durationMs: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'media_2',
+        publicId: 'pub_2',
+        url: '/m/pub_2',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+        width: 1024,
+        height: 1024,
+        durationMs: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'media_3',
+        publicId: 'pub_3',
+        url: '/m/pub_3',
+        mimeType: 'image/jpeg',
+        sizeBytes: 1024,
+        width: 1024,
+        height: 1024,
+        durationMs: null,
+      })
+
+    const { executeImageGenerate } = await import('@/lib/workflow-engine/executors/image-generate')
+    const result = await executeImageGenerate(createContext({
+      nodeType: 'image-generate',
+      config: {
+        model: 'fal::flux-pro',
+        candidateCount: 3,
+      },
+      inputs: {
+        prompt: 'Hero in the rain',
+      },
+    }))
+
+    expect(mockGenerateImage).toHaveBeenCalledTimes(3)
+    expect(result.outputs).toEqual(expect.objectContaining({
+      image: '/m/pub_1',
+      imageUrl: '/m/pub_1',
+      candidateImages: ['/m/pub_1', '/m/pub_2', '/m/pub_3'],
+    }))
+    expect(result.metadata).toEqual(expect.objectContaining({
+      candidateCount: 3,
+    }))
   })
 
   it('generates standalone video output from upstream image input', async () => {
@@ -244,6 +308,7 @@ describe('workflow media executors standalone behavior', () => {
       config: {
         model: 'fal::flux-pro',
         artStyle: 'realistic',
+        candidateCount: 4,
       },
     }))
 
@@ -254,16 +319,19 @@ describe('workflow media executors standalone behavior', () => {
       basePayload: expect.objectContaining({
         panelId: 'panel_1',
         artStyle: 'realistic',
+        candidateCount: 4,
       }),
     })
     expect(mockSubmitTask).toHaveBeenCalledWith(expect.objectContaining({
       payload: expect.objectContaining({
         panelId: 'panel_1',
         artStyle: 'realistic',
+        candidateCount: 4,
       }),
     }))
     expect(result.metadata).toEqual(expect.objectContaining({
       artStyle: 'realistic',
+      candidateCount: 4,
     }))
   })
 

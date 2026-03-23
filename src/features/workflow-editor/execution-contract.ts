@@ -3,6 +3,8 @@ import { NODE_TYPE_REGISTRY } from '@/lib/workflow-engine/registry'
 export interface WorkflowPanelMediaSnapshot {
   imageUrl: string | null
   videoUrl: string | null
+  previousImageUrl?: string | null
+  candidateImages?: string[]
 }
 
 export interface WorkflowVoiceLineSnapshot {
@@ -69,7 +71,17 @@ export function normalizeMediaOutputsForNode(
   panel: WorkflowPanelMediaSnapshot,
 ): Record<string, unknown> {
   if (nodeType === 'image-generate') {
-    return hasStringValue(panel.imageUrl) ? { image: panel.imageUrl } : {}
+    const outputs: Record<string, unknown> = {}
+    if (hasStringValue(panel.imageUrl)) {
+      outputs.image = panel.imageUrl
+    }
+    if (hasStringValue(panel.previousImageUrl)) {
+      outputs.previousImageUrl = panel.previousImageUrl
+    }
+    if (Array.isArray(panel.candidateImages) && panel.candidateImages.length > 0) {
+      outputs.candidateImages = panel.candidateImages
+    }
+    return outputs
   }
   if (nodeType === 'video-generate') {
     return hasStringValue(panel.videoUrl) ? { video: panel.videoUrl } : {}
