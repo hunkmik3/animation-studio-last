@@ -1,18 +1,21 @@
 'use client'
 import { logError as _ulogError } from '@/lib/logging/core'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import type { DragEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import { AppIcon } from '@/components/ui/icons'
 import { ART_STYLES } from '@/lib/constants'
 import { shouldShowError } from '@/lib/error-utils'
 import TaskStatusInline from '@/components/task/TaskStatusInline'
 import { resolveTaskPresentationState } from '@/lib/task/presentation'
+import { MediaImageWithLoading } from '@/components/media/MediaImageWithLoading'
 import {
     useAiCreateProjectLocation,
     useAiDesignLocation,
     useCreateAssetHubLocation,
     useCreateProjectLocation,
+    useUploadAssetHubTempMedia,
 } from '@/lib/query/hooks'
 
 export interface LocationCreationModalProps {
@@ -46,12 +49,15 @@ export function LocationCreationModal({
     const createAssetHubLocation = useCreateAssetHubLocation()
     const aiCreateProjectLocation = useAiCreateProjectLocation(projectId || '')
     const createProjectLocation = useCreateProjectLocation(projectId || '')
+    const uploadAssetHubTempMedia = useUploadAssetHubTempMedia()
 
     // 表单字段
     const [name, setName] = useState('')
     const [description, setDescription] = useState('')
     const [aiInstruction, setAiInstruction] = useState('')
     const [artStyle, setArtStyle] = useState('american-comic')
+    const [referenceImagesBase64, setReferenceImagesBase64] = useState<string[]>([])
+    const fileInputRef = useRef<HTMLInputElement>(null)
 
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [isAiDesigning, setIsAiDesigning] = useState(false)
@@ -87,6 +93,44 @@ export function LocationCreationModal({
         return null
     }
 
+    const handleFileSelect = useCallback(async (files: FileList | File[]) => {
+        const fileArray = Array.from(files).filter((file) => file.type.startsWith('image/'))
+        if (fileArray.length === 0) return
+
+        const remaining = 5 - referenceImagesBase64.length
+        const toAdd = fileArray.slice(0, remaining)
+
+        for (const file of toAdd) {
+            const reader = new FileReader()
+            reader.onload = (event) => {
+                const base64 = event.target?.result
+                if (typeof base64 !== 'string') return
+                setReferenceImagesBase64((previous) => {
+                    if (previous.length >= 5) return previous
+                    if (previous.includes(base64)) return previous
+                    return [...previous, base64]
+                })
+            }
+            reader.readAsDataURL(file)
+        }
+    }, [referenceImagesBase64.length])
+
+    const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.dataTransfer.files.length > 0) {
+            void handleFileSelect(event.dataTransfer.files)
+        }
+    }, [handleFileSelect])
+
+    const handleClearReference = useCallback((index?: number) => {
+        if (typeof index === 'number') {
+            setReferenceImagesBase64((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
+            return
+        }
+        setReferenceImagesBase64([])
+    }, [])
+
     // ESC 键关闭
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -97,6 +141,30 @@ export function LocationCreationModal({
         document.addEventListener('keydown', handleKeyDown)
         return () => document.removeEventListener('keydown', handleKeyDown)
     }, [onClose, isSubmitting, isAiDesigning])
+
+    useEffect(() => {
+        const handleGlobalPaste = (event: ClipboardEvent) => {
+            if (mode !== 'asset-hub') return
+
+            const target = event.target as HTMLElement
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+
+            const items = event.clipboardData?.items
+            if (!items) return
+
+            for (let index = 0; index < items.length; index += 1) {
+                if (!items[index]?.type.startsWith('image/')) continue
+                const file = items[index]?.getAsFile()
+                if (!file) continue
+                event.preventDefault()
+                void handleFileSelect([file])
+                break
+            }
+        }
+
+        document.addEventListener('paste', handleGlobalPaste)
+        return () => document.removeEventListener('paste', handleGlobalPaste)
+    }, [handleFileSelect, mode])
 
     // AI 设计描述
     const handleAiDesign = async () => {
@@ -146,11 +214,22 @@ export function LocationCreationModal({
             }
 
             if (mode === 'asset-hub') {
+                const referenceImageUrls = await Promise.all(
+                    referenceImagesBase64.map(async (imageBase64) => {
+                        const response = await uploadAssetHubTempMedia.mutateAsync({ imageBase64 })
+                        if (!response.key) {
+                            throw new Error(t('errors.uploadFailed'))
+                        }
+                        return response.key
+                    }),
+                )
+
                 await createAssetHubLocation.mutateAsync({
                     name: body.name,
                     summary: body.description,
                     artStyle: body.artStyle,
                     folderId: body.folderId ?? null,
+                    referenceImageUrls,
                 })
             } else {
                 await createProjectLocation.mutateAsync({
@@ -237,6 +316,78 @@ export function LocationCreationModal({
                                 ))}
                             </div>
                         </div>
+
+                        {mode === 'asset-hub' && (
+                            <div className="glass-surface-soft rounded-xl p-4 space-y-3 border border-[var(--glass-stroke-base)]">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2 text-sm font-medium text-[var(--glass-tone-info-fg)]">
+                                        <AppIcon name="image" className="w-4 h-4" />
+                                        <span>{t('location.uploadReference')} {t('common.optional')}</span>
+                                    </div>
+                                    <span className="text-xs text-[var(--glass-text-tertiary)]">{t('character.pasteHint')}</span>
+                                </div>
+                                <div
+                                    className="border-2 border-dashed border-[var(--glass-stroke-base)] rounded-lg p-4 flex flex-col items-center justify-center cursor-pointer hover:border-[var(--glass-stroke-focus)] hover:bg-[var(--glass-tone-info-bg)] transition-all relative min-h-[120px]"
+                                    onDrop={handleDrop}
+                                    onDragOver={(event) => {
+                                        event.preventDefault()
+                                        event.stopPropagation()
+                                    }}
+                                    onClick={() => fileInputRef.current?.click()}
+                                >
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        multiple
+                                        className="hidden"
+                                        onChange={(event) => {
+                                            if (event.target.files) {
+                                                void handleFileSelect(event.target.files)
+                                            }
+                                        }}
+                                    />
+
+                                    {referenceImagesBase64.length > 0 ? (
+                                        <div className="w-full">
+                                            <div className="grid grid-cols-3 gap-2 mb-2">
+                                                {referenceImagesBase64.map((base64, index) => (
+                                                    <div key={`${base64}-${index}`} className="relative aspect-square">
+                                                        <MediaImageWithLoading
+                                                            src={base64}
+                                                            alt={`${name || t('location.title')} ${index + 1}`}
+                                                            containerClassName="w-full h-full rounded"
+                                                            className="w-full h-full object-cover rounded"
+                                                        />
+                                                        <button
+                                                            onClick={(event) => {
+                                                                event.stopPropagation()
+                                                                handleClearReference(index)
+                                                            }}
+                                                            className="glass-btn-base glass-btn-tone-danger absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <p className="text-xs text-center text-[var(--glass-text-secondary)]">
+                                                {t('location.selectedCount', { count: referenceImagesBase64.length })}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <AppIcon name="globe2" className="w-10 h-10 text-[var(--glass-text-tertiary)] mb-2" />
+                                            <p className="text-sm text-[var(--glass-text-secondary)]">{t('location.dropOrClick')}</p>
+                                            <p className="text-xs text-[var(--glass-text-tertiary)] mt-1">{t('location.maxReferenceImages')}</p>
+                                        </>
+                                    )}
+                                </div>
+                                <p className="glass-field-hint">
+                                    {t('location.referenceTip')}
+                                </p>
+                            </div>
+                        )}
 
                         {/* AI 设计区域 */}
                         <div className="glass-surface-soft rounded-xl p-4 space-y-3 border border-[var(--glass-stroke-base)]">

@@ -1,5 +1,9 @@
 const SUPPORTED_EXECUTION_NODE_TYPES = [
   'text-input',
+  'character-assets',
+  'location-assets',
+  'shot-splitter',
+  'reference-image',
   'llm-prompt',
   'character-extract',
   'scene-extract',

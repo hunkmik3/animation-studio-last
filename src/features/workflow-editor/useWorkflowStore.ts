@@ -1494,7 +1494,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
 
         const nodeData = toRecord(storyboardNode.data)
         const nodeType = typeof nodeData.nodeType === 'string' ? nodeData.nodeType : ''
-        if (nodeType !== 'storyboard') return
+        if (nodeType !== 'storyboard' && nodeType !== 'shot-splitter') return
 
         const executionOutputs = toRecord(state.nodeExecutionStates[nodeId]?.outputs)
         const storeOutputs = toRecord(state.nodeOutputs[nodeId])
@@ -1506,7 +1506,9 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
                 : initialOutput
         const panels = extractStoryboardPanelsFromOutputs(outputs)
         if (panels.length === 0) {
-            throw new Error('Storyboard node has no materializable panels yet. Run storyboard first.')
+            throw new Error(nodeType === 'shot-splitter'
+                ? 'Shot splitter node has no materializable shots yet. Run shot splitter first.'
+                : 'Storyboard node has no materializable panels yet. Run storyboard first.')
         }
         const characterReferences = extractCharacterReferenceSeeds(
             resolveConnectedMaterializationValue({
@@ -1532,6 +1534,12 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
         const derivedNodeIds = collectStoryboardDerivedNodeIds(state.nodes, nodeId)
         const nextNodes = state.nodes.filter((node) => !derivedNodeIds.has(node.id))
         const nextEdges = state.edges.filter((edge) => !derivedNodeIds.has(edge.source) && !derivedNodeIds.has(edge.target))
+        const nextNodeOutputs = Object.fromEntries(
+            Object.entries(state.nodeOutputs).filter(([candidateNodeId]) => !derivedNodeIds.has(candidateNodeId)),
+        )
+        const nextNodeExecutionStates = Object.fromEntries(
+            Object.entries(state.nodeExecutionStates).filter(([candidateNodeId]) => !derivedNodeIds.has(candidateNodeId)),
+        )
         const storyboardConfig = toRecord(nodeData.config)
         const builtGraph = buildStoryboardPanelGraph({
             storyboardNodeId: nodeId,
@@ -1548,6 +1556,8 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
         set((s) => ({
             nodes: [...nextNodes, ...builtGraph.nodes],
             edges: [...nextEdges, ...builtGraph.edges],
+            nodeOutputs: { ...nextNodeOutputs, ...builtGraph.preloadedOutputs },
+            nodeExecutionStates: nextNodeExecutionStates,
             selectedNodeId: builtGraph.groupId,
             meta: { ...s.meta, isSaved: false },
         }))

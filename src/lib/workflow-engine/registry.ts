@@ -29,6 +29,108 @@ const TEXT_INPUT_NODE: WorkflowNodeTypeDefinition = {
     defaultConfig: { content: '' },
 }
 
+const CHARACTER_ASSETS_NODE: WorkflowNodeTypeDefinition = {
+    type: 'character-assets',
+    title: 'Character Assets',
+    description: 'Bind Asset Hub character references into the workflow as reusable source-of-truth refs',
+    icon: 'Users',
+    category: 'input',
+    color: '#db2777',
+    inputs: [],
+    outputs: [
+        { id: 'characters', name: 'Characters', type: 'characters', required: true },
+        { id: 'summary', name: 'Summary', type: 'text', required: false },
+    ],
+    configFields: [],
+    defaultConfig: {
+        selectedCharacterIds: [],
+    },
+}
+
+const LOCATION_ASSETS_NODE: WorkflowNodeTypeDefinition = {
+    type: 'location-assets',
+    title: 'Location Assets',
+    description: 'Bind Asset Hub location references into the workflow as reusable scene refs',
+    icon: 'MapPin',
+    category: 'input',
+    color: '#0f766e',
+    inputs: [],
+    outputs: [
+        { id: 'scenes', name: 'Scenes', type: 'scenes', required: true },
+        { id: 'summary', name: 'Summary', type: 'text', required: false },
+    ],
+    configFields: [],
+    defaultConfig: {
+        selectedLocationIds: [],
+    },
+}
+
+const SHOT_SPLITTER_NODE: WorkflowNodeTypeDefinition = {
+    type: 'shot-splitter',
+    title: 'Shot Splitter',
+    description: 'Split a script into deterministic shot-sized panel seeds before materializing the panel workflow',
+    icon: 'Film',
+    category: 'transform',
+    color: '#f97316',
+    inputs: [
+        { id: 'text', name: 'Script Text', type: 'text', required: true },
+        { id: 'characters', name: 'Characters', type: 'characters', required: false },
+        { id: 'scenes', name: 'Scenes', type: 'scenes', required: false },
+    ],
+    outputs: [
+        { id: 'panels', name: 'Shots', type: 'panels', required: true },
+        { id: 'summary', name: 'Summary', type: 'text', required: false },
+    ],
+    configFields: [
+        {
+            key: 'splitMode',
+            label: 'Split Mode',
+            type: 'select',
+            options: [
+                { label: 'Each Line = 1 Shot', value: 'line' },
+                { label: 'Each Sentence = 1 Shot', value: 'sentence' },
+                { label: 'Each Paragraph = 1 Shot', value: 'paragraph' },
+            ],
+            defaultValue: 'line',
+        },
+        {
+            key: 'locationBindingMode',
+            label: 'Location Binding',
+            type: 'select',
+            options: [
+                { label: 'Inherit Last Scene', value: 'inherit-last' },
+                { label: 'Only Explicit Scene Mentions', value: 'explicit-only' },
+            ],
+            defaultValue: 'inherit-last',
+        },
+        { key: 'maxShots', label: 'Max Shots', type: 'number', defaultValue: 24 },
+    ],
+    defaultConfig: {
+        splitMode: 'line',
+        locationBindingMode: 'inherit-last',
+        maxShots: 24,
+    },
+}
+
+const REFERENCE_IMAGE_NODE: WorkflowNodeTypeDefinition = {
+    type: 'reference-image',
+    title: 'Reference Image',
+    description: 'Provide a fixed reference image URL for downstream panel generation',
+    icon: 'Image',
+    category: 'input',
+    color: '#2563eb',
+    inputs: [],
+    outputs: [
+        { id: 'image', name: 'Image', type: 'image', required: true },
+    ],
+    configFields: [
+        { key: 'imageUrl', label: 'Image URL', type: 'text', placeholder: 'https://... or /m/...', required: true },
+    ],
+    defaultConfig: {
+        imageUrl: '',
+    },
+}
+
 const LLM_PROMPT_NODE: WorkflowNodeTypeDefinition = {
     type: 'llm-prompt',
     title: 'LLM / AI Prompt',
@@ -382,6 +484,10 @@ const OUTPUT_NODE: WorkflowNodeTypeDefinition = {
 
 export const NODE_TYPE_REGISTRY: Record<string, WorkflowNodeTypeDefinition> = {
     'text-input': TEXT_INPUT_NODE,
+    'character-assets': CHARACTER_ASSETS_NODE,
+    'location-assets': LOCATION_ASSETS_NODE,
+    'shot-splitter': SHOT_SPLITTER_NODE,
+    'reference-image': REFERENCE_IMAGE_NODE,
     'llm-prompt': LLM_PROMPT_NODE,
     'character-extract': CHARACTER_EXTRACT_NODE,
     'scene-extract': SCENE_EXTRACT_NODE,
@@ -396,10 +502,10 @@ export const NODE_TYPE_REGISTRY: Record<string, WorkflowNodeTypeDefinition> = {
 }
 
 export const NODE_TYPES_BY_CATEGORY = {
-    input: [TEXT_INPUT_NODE],
+    input: [TEXT_INPUT_NODE, CHARACTER_ASSETS_NODE, LOCATION_ASSETS_NODE, REFERENCE_IMAGE_NODE],
     ai: [LLM_PROMPT_NODE, CHARACTER_EXTRACT_NODE, SCENE_EXTRACT_NODE, STORYBOARD_NODE],
     media: [IMAGE_GENERATE_NODE, VIDEO_GENERATE_NODE, VOICE_SYNTHESIS_NODE],
-    transform: [UPSCALE_NODE, VIDEO_COMPOSE_NODE, CONDITION_NODE],
+    transform: [SHOT_SPLITTER_NODE, UPSCALE_NODE, VIDEO_COMPOSE_NODE, CONDITION_NODE],
     output: [OUTPUT_NODE],
 } as const
 

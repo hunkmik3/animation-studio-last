@@ -46,7 +46,12 @@
         "name": "Location Name",
         "namePlaceholder": "Enter location name",
         "description": "Location Description",
-        "descPlaceholder": "Enter location description..."
+        "descPlaceholder": "Enter location description...",
+        "uploadReference": "Upload Reference",
+        "dropOrClick": "Click to upload or drag image",
+        "maxReferenceImages": "Up to 5 reference images",
+        "selectedCount": "Selected {count}/5 images",
+        "referenceTip": "Upload your environment references here. When provided, the new location will use these images instead of auto-generating immediately."
     },
     "artStyle": {
         "title": "Art Style"

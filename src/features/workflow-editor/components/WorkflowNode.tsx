@@ -218,6 +218,31 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
                         </div>
                     )}
 
+                    {nodeType === 'character-assets' && (
+                        <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[10px] text-pink-300 truncate max-w-[180px]">
+                            {`${Array.isArray(nodeData.config?.selectedCharacterIds) ? nodeData.config.selectedCharacterIds.length : 0} character refs selected`}
+                        </div>
+                    )}
+
+                    {nodeType === 'location-assets' && (
+                        <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[10px] text-teal-300 truncate max-w-[180px]">
+                            {`${Array.isArray(nodeData.config?.selectedLocationIds) ? nodeData.config.selectedLocationIds.length : 0} location refs selected`}
+                        </div>
+                    )}
+
+                    {nodeType === 'reference-image' && nodeData.config?.imageUrl && (
+                        <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[10px] text-blue-300 truncate max-w-[180px]">
+                            Fixed reference image
+                        </div>
+                    )}
+
+                    {nodeType === 'shot-splitter' && (
+                        <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[9px] text-orange-300 flex flex-col gap-0.5 max-w-[180px]">
+                            <span>{`Mode: ${String(nodeData.config?.splitMode || 'line')}`}</span>
+                            <span className="text-slate-500">{`Max shots: ${String(nodeData.config?.maxShots || 24)}`}</span>
+                        </div>
+                    )}
+
                     {nodeType === 'image-generate' && (
                         <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[9px] text-slate-400 flex flex-col gap-0.5 max-w-[180px]">
                             <span className="truncate text-blue-300">Provider: {String(nodeData.config?.provider || 'flux')}</span>

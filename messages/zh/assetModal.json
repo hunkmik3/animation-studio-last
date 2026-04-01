@@ -46,7 +46,12 @@
         "name": "场景名称",
         "namePlaceholder": "请输入场景名称",
         "description": "场景描述",
-        "descPlaceholder": "请输入场景描述..."
+        "descPlaceholder": "请输入场景描述...",
+        "uploadReference": "上传参考图",
+        "dropOrClick": "点击上传或拖拽图片",
+        "maxReferenceImages": "最多上传 5 张参考图",
+        "selectedCount": "已选择 {count}/5 张参考图",
+        "referenceTip": "把你的场景参考图上传到这里。上传后，新建场景会优先使用这些图片，而不会立即自动生成新图。"
     },
     "artStyle": {
         "title": "画面风格"

@@ -12,6 +12,10 @@
 
 import type { NodeExecutor } from './types'
 import { executeTextInput } from './text-input'
+import { executeCharacterAssets } from './character-assets'
+import { executeLocationAssets } from './location-assets'
+import { executeShotSplitter } from './shot-splitter'
+import { executeReferenceImage } from './reference-image'
 import { executeLlmPrompt } from './llm-prompt'
 import { executeCharacterExtract } from './character-extract'
 import { executeSceneExtract } from './scene-extract'
@@ -22,6 +26,10 @@ import { executeVoiceSynthesis } from './voice-synthesis'
 
 export const NODE_EXECUTOR_REGISTRY: Record<string, NodeExecutor> = {
   'text-input': executeTextInput,
+  'character-assets': executeCharacterAssets,
+  'location-assets': executeLocationAssets,
+  'shot-splitter': executeShotSplitter,
+  'reference-image': executeReferenceImage,
   'llm-prompt': executeLlmPrompt,
   'character-extract': executeCharacterExtract,
   'scene-extract': executeSceneExtract,

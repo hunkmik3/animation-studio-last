@@ -5,6 +5,10 @@ import { requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { ApiError, apiHandler } from '@/lib/api-errors'
 import { attachMediaFieldsToGlobalLocation } from '@/lib/media/attach'
 import { resolveTaskLocale } from '@/lib/task/resolve-locale'
+import {
+    buildLocationImageSeeds,
+    normalizeLocationReferenceImageUrls,
+} from '@/lib/asset-hub/location-reference-images'
 
 function toObject(value: unknown): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -52,7 +56,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     const taskLocale = resolveTaskLocale(request, body)
     const bodyMeta = toObject((body as Record<string, unknown>).meta)
     const acceptLanguage = request.headers.get('accept-language') || ''
-    const { name, summary, folderId, artStyle } = body
+    const { name, summary, folderId, artStyle, referenceImageUrl, referenceImageUrls } = body
 
     if (!name) {
         throw new ApiError('INVALID_PARAMS')
@@ -67,6 +71,10 @@ export const POST = apiHandler(async (request: NextRequest) => {
         }
     }
 
+    const normalizedReferenceImageUrls = normalizeLocationReferenceImageUrls(
+        Array.isArray(referenceImageUrls) ? referenceImageUrls : referenceImageUrl,
+    )
+
     const location = await prisma.globalLocation.create({
         data: {
             userId: session.user.id,
@@ -77,11 +85,17 @@ export const POST = apiHandler(async (request: NextRequest) => {
     })
 
     await prisma.globalLocationImage.createMany({
-        data: [
-            { locationId: location.id, imageIndex: 0, description: summary?.trim() || name.trim() },
-            { locationId: location.id, imageIndex: 1, description: summary?.trim() || name.trim() },
-            { locationId: location.id, imageIndex: 2, description: summary?.trim() || name.trim() }
-        ]
+        data: buildLocationImageSeeds({
+            name: name.trim(),
+            summary: summary?.trim() || null,
+            referenceImageUrls: normalizedReferenceImageUrls,
+        }).map((image) => ({
+            locationId: location.id,
+            imageIndex: image.imageIndex,
+            description: image.description,
+            imageUrl: image.imageUrl,
+            isSelected: image.isSelected,
+        })),
     })
 
     const locationWithImages = await prisma.globalLocation.findUnique({
@@ -89,7 +103,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
         include: { images: true }
     })
 
-    if (summary?.trim()) {
+    if (summary?.trim() && normalizedReferenceImageUrls.length === 0) {
         const { getBaseUrl } = await import('@/lib/env')
         const baseUrl = getBaseUrl()
         fetch(`${baseUrl}/api/asset-hub/generate-image`, {

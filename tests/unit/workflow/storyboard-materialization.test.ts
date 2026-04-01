@@ -41,7 +41,9 @@ describe('storyboard materialization helpers', () => {
         imagePrompt: 'Anime alley with neon reflections',
         videoPrompt: 'Slow dolly forward through the alley',
         characters: ['Hero'],
+        characterAssetIds: [],
         location: 'Neon Alley',
+        locationAssetId: '',
       },
       {
         panelIndex: 1,
@@ -51,7 +53,9 @@ describe('storyboard materialization helpers', () => {
         imagePrompt: 'Close-up on the hero',
         videoPrompt: 'Close-up on the hero',
         characters: ['Hero', 'Shadow'],
+        characterAssetIds: [],
         location: 'Neon Alley',
+        locationAssetId: '',
       },
     ])
   })
@@ -81,14 +85,18 @@ describe('storyboard materialization helpers', () => {
 
     expect(characterSeeds).toEqual([
       expect.objectContaining({
+        assetId: '',
         name: 'Eren',
         aliases: ['Jaeger'],
+        imageUrl: null,
       }),
     ])
     expect(characterSeeds[0]?.prompt).toContain('production character reference illustration')
     expect(sceneSeeds).toEqual([
       expect.objectContaining({
+        assetId: '',
         name: 'Shiganshina Gate',
+        imageUrl: null,
       }),
     ])
     expect(sceneSeeds[0]?.prompt).toContain('production environment reference concept art')
@@ -101,15 +109,19 @@ describe('storyboard materialization helpers', () => {
       storyboardPosition: { x: 100, y: 200 },
       characterReferences: [
         {
+          assetId: '',
           name: 'Eren',
           aliases: ['Jaeger'],
           prompt: 'Eren reference prompt',
+          imageUrl: null,
         },
       ],
       sceneReferences: [
         {
+          assetId: '',
           name: 'Shiganshina Gate',
           prompt: 'Gate scene prompt',
+          imageUrl: null,
         },
       ],
       artStyle: 'realistic',
@@ -122,7 +134,9 @@ describe('storyboard materialization helpers', () => {
           imagePrompt: 'Image prompt 1',
           videoPrompt: 'Video prompt 1',
           characters: ['Eren'],
+          characterAssetIds: [],
           location: 'Shiganshina Gate',
+          locationAssetId: '',
         },
         {
           panelIndex: 1,
@@ -132,7 +146,9 @@ describe('storyboard materialization helpers', () => {
           imagePrompt: 'Image prompt 2',
           videoPrompt: 'Video prompt 2',
           characters: [],
+          characterAssetIds: [],
           location: '',
+          locationAssetId: '',
         },
       ],
     })
@@ -204,6 +220,138 @@ describe('storyboard materialization helpers', () => {
       expect.objectContaining({
         source: 'storyboard_1__scene_ref_1__image',
         target: 'storyboard_1__panel_1__image',
+        targetHandle: 'reference',
+      }),
+    ]))
+    expect(graph.preloadedOutputs).toEqual({})
+  })
+
+  it('prefers asset-backed reference images when storyboard inputs already contain selected refs', () => {
+    const graph = buildStoryboardPanelGraph({
+      storyboardNodeId: 'storyboard_asset_1',
+      storyboardNodeLabel: 'Asset Storyboard',
+      storyboardPosition: { x: 80, y: 120 },
+      characterReferences: [
+        {
+          assetId: 'char-queen',
+          name: 'Queen Elara',
+          aliases: ['Empress Elara'],
+          prompt: 'Unused because asset ref should win',
+          imageUrl: '/m/queen-elara.png',
+        },
+      ],
+      sceneReferences: [
+        {
+          assetId: 'scene-backroom',
+          name: 'Secret Backroom',
+          prompt: 'Unused because asset ref should win',
+          imageUrl: '/m/secret-backroom.png',
+        },
+      ],
+      panels: [
+        {
+          panelIndex: 0,
+          panelNumber: 1,
+          description: 'Panel 1',
+          sourceText: 'Line 1',
+          imagePrompt: 'Queen Elara confronts the nobles',
+          videoPrompt: 'A slow push-in over the table',
+          characters: ['Queen Elara'],
+          characterAssetIds: ['char-queen'],
+          location: 'Secret Backroom',
+          locationAssetId: 'scene-backroom',
+        },
+      ],
+    })
+
+    const characterReferenceNode = graph.nodes.find((node) => node.id === 'storyboard_asset_1__character_ref_1__image')
+    const sceneReferenceNode = graph.nodes.find((node) => node.id === 'storyboard_asset_1__scene_ref_1__image')
+
+    expect(characterReferenceNode?.data).toEqual(expect.objectContaining({
+      nodeType: 'reference-image',
+      config: expect.objectContaining({
+        imageUrl: '/m/queen-elara.png',
+      }),
+      initialOutput: {
+        image: '/m/queen-elara.png',
+      },
+      materializedReferenceSource: 'asset-hub',
+    }))
+    expect(sceneReferenceNode?.data).toEqual(expect.objectContaining({
+      nodeType: 'reference-image',
+      config: expect.objectContaining({
+        imageUrl: '/m/secret-backroom.png',
+      }),
+      initialOutput: {
+        image: '/m/secret-backroom.png',
+      },
+      materializedReferenceSource: 'asset-hub',
+    }))
+    expect(graph.preloadedOutputs).toEqual({
+      storyboard_asset_1__character_ref_1__image: { image: '/m/queen-elara.png' },
+      storyboard_asset_1__scene_ref_1__image: { image: '/m/secret-backroom.png' },
+    })
+    expect(graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'storyboard_asset_1__character_ref_1__image',
+        target: 'storyboard_asset_1__panel_1__image',
+        targetHandle: 'reference',
+      }),
+      expect.objectContaining({
+        source: 'storyboard_asset_1__scene_ref_1__image',
+        target: 'storyboard_asset_1__panel_1__image',
+        targetHandle: 'reference',
+      }),
+    ]))
+  })
+
+  it('connects reference nodes by asset id even when panel character/location names differ', () => {
+    const graph = buildStoryboardPanelGraph({
+      storyboardNodeId: 'storyboard_asset_id_1',
+      storyboardNodeLabel: 'Asset Id Storyboard',
+      storyboardPosition: { x: 100, y: 120 },
+      characterReferences: [
+        {
+          assetId: 'char-queen',
+          name: 'Clara Queen',
+          aliases: ['Empress Elara'],
+          prompt: 'Reference prompt',
+          imageUrl: '/m/queen-ref.png',
+        },
+      ],
+      sceneReferences: [
+        {
+          assetId: 'scene-backroom',
+          name: 'Secret Backroom',
+          prompt: 'Reference prompt',
+          imageUrl: '/m/scene-ref.png',
+        },
+      ],
+      panels: [
+        {
+          panelIndex: 0,
+          panelNumber: 1,
+          description: 'Panel 1',
+          sourceText: 'Line 1',
+          imagePrompt: 'Image prompt 1',
+          videoPrompt: 'Video prompt 1',
+          characters: ['Queen Elara'],
+          characterAssetIds: ['char-queen'],
+          location: 'War Room',
+          locationAssetId: 'scene-backroom',
+        },
+      ],
+    })
+
+    expect(graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'storyboard_asset_id_1__character_ref_1__image',
+        target: 'storyboard_asset_id_1__panel_1__image',
+        targetHandle: 'reference',
+      }),
+      expect.objectContaining({
+        source: 'storyboard_asset_id_1__scene_ref_1__image',
+        target: 'storyboard_asset_id_1__panel_1__image',
         targetHandle: 'reference',
       }),
     ]))

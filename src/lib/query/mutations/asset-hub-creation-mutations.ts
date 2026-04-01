@@ -36,6 +36,7 @@ export function useCreateAssetHubLocation() {
       summary: string
       folderId: string | null
       artStyle: string
+      referenceImageUrls?: string[]
     }) => {
       return await requestJsonWithError('/api/asset-hub/locations', {
         method: 'POST',

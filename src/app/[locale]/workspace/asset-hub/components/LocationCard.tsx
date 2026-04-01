@@ -15,6 +15,7 @@ import { resolveTaskPresentationState } from '@/lib/task/presentation'
 import TaskStatusOverlay from '@/components/task/TaskStatusOverlay'
 import TaskStatusInline from '@/components/task/TaskStatusInline'
 import { AppIcon } from '@/components/ui/icons'
+import { getAssetCardEmptyStateConfig } from './asset-card-empty-state'
 
 interface LocationImage {
   id: string
@@ -56,6 +57,7 @@ export function LocationCard({ location, onImageClick, onImageEdit, onEdit }: Lo
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const latestSelectRequestRef = useRef(0)
+  const emptyStateConfig = getAssetCardEmptyStateConfig('location')
 
   // 解析图片
   const imagesWithUrl = location.images?.filter(img => img.imageUrl) || []
@@ -320,11 +322,21 @@ export function LocationCard({ location, onImageClick, onImageEdit, onEdit }: Lo
           </>
         ) : (
           <div className="flex flex-col items-center justify-center py-12 text-[var(--glass-text-tertiary)]">
-            <AppIcon name="globe2" className="w-12 h-12 mb-3" />
-            <button onClick={handleGenerate} className="glass-btn-base glass-btn-primary flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg">
-              <AppIcon name="sparklesAlt" className="w-4 h-4" />
-              {t('generate')}
-            </button>
+            <AppIcon name={emptyStateConfig.iconName} className="w-12 h-12 mb-3" />
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadImage.isPending}
+                className="glass-btn-base glass-btn-secondary flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg"
+              >
+                <AppIcon name="upload" className="w-4 h-4 text-[var(--glass-tone-success-fg)]" />
+                {tAssets('image.upload')}
+              </button>
+              <button onClick={handleGenerate} className="glass-btn-base glass-btn-primary flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg">
+                <AppIcon name="sparklesAlt" className="w-4 h-4" />
+                {t('generate')}
+              </button>
+            </div>
           </div>
         )}
         {isTaskRunning && (

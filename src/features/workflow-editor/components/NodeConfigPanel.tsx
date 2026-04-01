@@ -27,6 +27,7 @@ import { useUserModels } from '@/lib/query/hooks/useUserModels'
 import { toDisplayImageUrl } from '@/lib/media/image-url'
 import { MediaImageWithLoading } from '@/components/media/MediaImageWithLoading'
 import { ModelCapabilityDropdown } from '@/components/ui/config-modals/ModelCapabilityDropdown'
+import { WorkflowAssetSelectionSection } from './WorkflowAssetSelectionSection'
 import {
     X, Settings2, Video, ImageIcon, Play, ChevronDown, ChevronRight,
     Eye, Pencil, Loader2, CheckCircle2, FileText, Mic, Film,
@@ -994,7 +995,7 @@ function StoryboardMaterializationSection({
     hasMaterializedPanels: boolean
     onMaterialize: () => void
 }) {
-    if (nodeType !== 'storyboard') return null
+    if (nodeType !== 'storyboard' && nodeType !== 'shot-splitter') return null
 
     const panels = extractStoryboardPanelsFromOutputs(outputs || initialOutput || null)
     if (panels.length === 0) return null
@@ -1014,7 +1015,9 @@ function StoryboardMaterializationSection({
                     {hasMaterializedPanels ? 'Refresh Panel Workflow' : 'Create Panel Workflow'}
                 </button>
                 <p className="text-[10px] text-slate-500 leading-relaxed">
-                    This expands storyboard output into editable character refs, scene refs, plus per-panel prompt, image, and video nodes so the workflow can keep going like the official project flow.
+                    {nodeType === 'shot-splitter'
+                        ? 'This expands deterministic script shots into editable ref, prompt, image, and video nodes so you can review each shot like an official panel workflow.'
+                        : 'This expands storyboard output into editable character refs, scene refs, plus per-panel prompt, image, and video nodes so the workflow can keep going like the official project flow.'}
                 </p>
             </div>
         </SectionHeader>
@@ -1033,6 +1036,7 @@ function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
         if (field.key === 'customPrompt' && nodeData.nodeType === 'image-generate') return false
         return true
     })
+    if (visibleFields.length === 0) return null
     return (
         <SectionHeader title="Settings" icon={Settings2} defaultOpen={false}>
             <div className="space-y-3">
@@ -1169,6 +1173,10 @@ function ConfigFieldsSection({ def, nodeData, onConfigChange }: {
 // ── Node type visual icon mapping ──
 const NODE_ICON_MAP: Record<string, React.ElementType> = {
     'text-input': FileText,
+    'character-assets': Users,
+    'location-assets': MapPin,
+    'shot-splitter': Film,
+    'reference-image': ImageIcon,
     'llm-prompt': Bot,
     'character-extract': Users,
     'scene-extract': MapPin,
@@ -1212,8 +1220,32 @@ export function NodeConfigPanel() {
         (key: string, value: unknown) => {
             if (!selectedNodeId) return
             updateNodeConfig(selectedNodeId, { [key]: value })
+            if (!nodeData || nodeData.nodeType !== 'reference-image' || key !== 'imageUrl') return
+
+            const imageUrl = typeof value === 'string' ? value.trim() : ''
+            if (!imageUrl) {
+                updateNodeData(selectedNodeId, { initialOutput: {} })
+                setNodeOutput(selectedNodeId, {})
+                setNodeExecutionState(selectedNodeId, {
+                    status: 'idle',
+                    progress: 0,
+                    message: undefined,
+                })
+                return
+            }
+
+            const outputs = { image: imageUrl }
+            updateNodeData(selectedNodeId, { initialOutput: outputs })
+            setNodeOutput(selectedNodeId, outputs)
+            setNodeExecutionState(selectedNodeId, {
+                status: 'completed',
+                progress: 100,
+                message: 'Reference image ready.',
+                completedAt: new Date().toISOString(),
+                outputs,
+            })
         },
-        [selectedNodeId, updateNodeConfig],
+        [nodeData, selectedNodeId, setNodeExecutionState, setNodeOutput, updateNodeConfig, updateNodeData],
     )
 
     const handleRun = useCallback(() => {
@@ -1407,6 +1439,20 @@ export function NodeConfigPanel() {
         }
     }, [executionState?.completedAt, executionState?.outputs, nodeData, projectId, selectedNodeId, setNodeExecutionState, setNodeOutput, updateNodeData])
 
+    const handleWorkflowAssetSelectionChange = useCallback((change: {
+        configPatch: Record<string, unknown>
+        outputs: Record<string, unknown>
+        nodeState: NodeExecutionState
+    }) => {
+        if (!selectedNodeId || !nodeData) return
+        updateNodeConfig(selectedNodeId, change.configPatch)
+        updateNodeData(selectedNodeId, {
+            initialOutput: change.outputs,
+        })
+        setNodeOutput(selectedNodeId, change.outputs)
+        setNodeExecutionState(selectedNodeId, change.nodeState)
+    }, [nodeData, selectedNodeId, setNodeExecutionState, setNodeOutput, updateNodeConfig, updateNodeData])
+
     // ── Empty state ──
     if (!selectedNode || !def || !nodeData) {
         return (
@@ -1491,6 +1537,14 @@ export function NodeConfigPanel() {
                         title="Location Images"
                         nodeId={selectedNodeId}
                         updateNodeData={updateNodeData}
+                    />
+                )}
+
+                {(nodeData.nodeType === 'character-assets' || nodeData.nodeType === 'location-assets') && (
+                    <WorkflowAssetSelectionSection
+                        nodeType={nodeData.nodeType}
+                        config={nodeData.config}
+                        onSelectionChange={handleWorkflowAssetSelectionChange}
                     />
                 )}
 

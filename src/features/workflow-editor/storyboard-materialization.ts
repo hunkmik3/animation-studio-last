@@ -1,14 +1,18 @@
 import type { Edge, Node } from '@xyflow/react'
 
 export interface StoryboardCharacterReferenceSeed {
+  assetId: string
   name: string
   aliases: string[]
   prompt: string
+  imageUrl: string | null
 }
 
 export interface StoryboardSceneReferenceSeed {
+  assetId: string
   name: string
   prompt: string
+  imageUrl: string | null
 }
 
 export interface StoryboardPanelSeed {
@@ -19,13 +23,16 @@ export interface StoryboardPanelSeed {
   imagePrompt: string
   videoPrompt: string
   characters: string[]
+  characterAssetIds: string[]
   location: string
+  locationAssetId: string
 }
 
 export interface StoryboardPanelGraphBuildResult {
   nodes: Node[]
   edges: Edge[]
   groupId: string
+  preloadedOutputs: Record<string, Record<string, unknown>>
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -54,6 +61,24 @@ function readStringArray(value: unknown): string[] {
     .filter(Boolean)
 }
 
+function readStringArrayLoose(value: unknown): string[] {
+  if (Array.isArray(value)) return readStringArray(value)
+  if (typeof value === 'string') {
+    const rawValue = value.trim()
+    if (!rawValue) return []
+    try {
+      return readStringArrayLoose(JSON.parse(rawValue) as unknown)
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function readAssetId(record: Record<string, unknown>): string {
+  return readString(record.assetId) || readString(record.id)
+}
+
 function normalizeMatchKey(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -74,7 +99,7 @@ function uniqueNames(values: string[]): string[] {
   return result
 }
 
-function parseNames(value: unknown): string[] {
+function parseCharacterRefs(value: unknown): { names: string[]; assetIds: string[] } {
   if (Array.isArray(value)) {
     const names = value.flatMap((item) => {
       if (typeof item === 'string') return [item]
@@ -83,20 +108,32 @@ function parseNames(value: unknown): string[] {
       }
       return []
     })
-    return uniqueNames(names)
+    const assetIds = value.flatMap((item) => {
+      if (typeof item === 'object' && item !== null) {
+        return [readAssetId(item as Record<string, unknown>)]
+      }
+      return []
+    })
+    return {
+      names: uniqueNames(names),
+      assetIds: uniqueNames(assetIds),
+    }
   }
 
   if (typeof value === 'string') {
     const rawValue = value.trim()
-    if (!rawValue) return []
+    if (!rawValue) return { names: [], assetIds: [] }
     try {
-      return parseNames(JSON.parse(rawValue) as unknown)
+      return parseCharacterRefs(JSON.parse(rawValue) as unknown)
     } catch {
-      return uniqueNames(rawValue.split(/[,\n;，、]/g))
+      return {
+        names: uniqueNames(rawValue.split(/[,\n;，、]/g)),
+        assetIds: [],
+      }
     }
   }
 
-  return []
+  return { names: [], assetIds: [] }
 }
 
 function buildCharacterReferencePrompt(record: Record<string, unknown>): string {
@@ -160,6 +197,26 @@ function buildSceneReferencePrompt(record: Record<string, unknown>): string {
   return parts.filter(Boolean).join('. ')
 }
 
+function readReferenceImageUrl(record: Record<string, unknown>): string | null {
+  const directCandidates = [
+    record.selectedImageUrl,
+    record.referenceImageUrl,
+    record.imageUrl,
+  ]
+
+  for (const candidate of directCandidates) {
+    const value = readString(candidate)
+    if (value) return value
+  }
+
+  const arrayCandidates = [
+    ...readStringArrayLoose(record.referenceImageUrls),
+    ...readStringArrayLoose(record.imageUrls),
+  ]
+
+  return arrayCandidates[0] || null
+}
+
 export function extractCharacterReferenceSeeds(raw: unknown): StoryboardCharacterReferenceSeed[] {
   const records = Array.isArray(raw)
     ? toObjectArray(raw)
@@ -171,12 +228,20 @@ export function extractCharacterReferenceSeeds(raw: unknown): StoryboardCharacte
     if (!name) continue
 
     const aliases = uniqueNames(readStringArray(record.aliases))
-    const key = normalizeMatchKey(name)
-    deduped.set(key, {
+    const assetId = readAssetId(record)
+    const key = normalizeMatchKey(assetId || name)
+    const nextSeed: StoryboardCharacterReferenceSeed = {
+      assetId,
       name,
       aliases,
       prompt: buildCharacterReferencePrompt(record),
-    })
+      imageUrl: readReferenceImageUrl(record),
+    }
+    const existingSeed = deduped.get(key)
+
+    if (!existingSeed || (!existingSeed.imageUrl && nextSeed.imageUrl)) {
+      deduped.set(key, nextSeed)
+    }
   }
 
   return Array.from(deduped.values())
@@ -193,10 +258,19 @@ export function extractStoryboardSceneReferenceSeeds(raw: unknown): StoryboardSc
     const name = readString(scene.name)
     if (!name) continue
 
-    deduped.set(normalizeMatchKey(name), {
+    const assetId = readAssetId(scene)
+    const key = normalizeMatchKey(assetId || name)
+    const nextSeed: StoryboardSceneReferenceSeed = {
+      assetId,
       name,
       prompt: buildSceneReferencePrompt(scene),
-    })
+      imageUrl: readReferenceImageUrl(scene),
+    }
+    const existingSeed = deduped.get(key)
+
+    if (!existingSeed || (!existingSeed.imageUrl && nextSeed.imageUrl)) {
+      deduped.set(key, nextSeed)
+    }
   }
 
   return Array.from(deduped.values())
@@ -217,8 +291,14 @@ export function extractStoryboardPanelsFromOutputs(
       const sourceText = readString(panel.source_text)
       const imagePrompt = readString(panel.imagePrompt) || description || sourceText
       const videoPrompt = readString(panel.videoPrompt) || readString(panel.video_prompt) || description || sourceText
-      const characters = parseNames(panel.characters)
+      const characterRefs = parseCharacterRefs(panel.characters)
+      const characterAssetIds = uniqueNames([
+        ...characterRefs.assetIds,
+        ...readStringArrayLoose(panel.character_asset_ids),
+        ...readStringArrayLoose(panel.characterAssetIds),
+      ])
       const location = readString(panel.location)
+      const locationAssetId = readString(panel.location_asset_id) || readString(panel.locationAssetId)
 
       return {
         panelIndex,
@@ -227,8 +307,10 @@ export function extractStoryboardPanelsFromOutputs(
         sourceText,
         imagePrompt,
         videoPrompt,
-        characters,
+        characters: characterRefs.names,
+        characterAssetIds,
         location,
+        locationAssetId,
       }
     })
     .filter((panel) => panel.imagePrompt.length > 0 || panel.videoPrompt.length > 0 || panel.description.length > 0)
@@ -324,6 +406,7 @@ export function buildStoryboardPanelGraph(params: {
     }),
   ]
   const edges: Edge[] = []
+  const preloadedOutputs: Record<string, Record<string, unknown>> = {}
   const characterReferenceNodeIds = new Map<string, string>()
   const sceneReferenceNodeIds = new Map<string, string>()
   const derivedMeta = {
@@ -334,62 +417,89 @@ export function buildStoryboardPanelGraph(params: {
   let referenceY = 30
   for (const [referenceIndex, character] of characterReferences.entries()) {
     const suffix = `character_ref_${referenceIndex + 1}`
-    const promptNodeId = `${params.storyboardNodeId}__${suffix}__prompt`
     const imageNodeId = `${params.storyboardNodeId}__${suffix}__image`
+    const imageUrl = readString(character.imageUrl)
 
-    nodes.push({
-      id: promptNodeId,
-      parentId: groupId,
-      extent: 'parent',
-      type: 'workflowNode',
-      position: { x: 40, y: referenceY },
-      data: {
-        nodeType: 'text-input',
-        label: `${character.name} Ref Prompt`,
-        config: { content: character.prompt },
-        materializedReferenceType: 'character',
-        materializedReferenceName: character.name,
-        ...derivedMeta,
-      },
-    })
-
-    nodes.push({
-      id: imageNodeId,
-      parentId: groupId,
-      extent: 'parent',
-      type: 'workflowNode',
-      position: { x: 280, y: referenceY - 20 },
-      data: {
-        nodeType: 'image-generate',
-        label: `${character.name} Ref Image`,
-        config: {
-          provider: 'flux',
-          model: '',
-          artStyle,
-          customPrompt: '',
-          negativePrompt: '',
-          aspectRatio: '1:1',
-          resolution: '2K',
+    if (imageUrl) {
+      nodes.push({
+        id: imageNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 280, y: referenceY - 20 },
+        data: {
+          nodeType: 'reference-image',
+          label: `${character.name} Ref Image`,
+          config: {
+            imageUrl,
+          },
+          initialOutput: {
+            image: imageUrl,
+          },
+          materializedReferenceType: 'character',
+          materializedReferenceName: character.name,
+          materializedReferenceSource: 'asset-hub',
+          ...derivedMeta,
         },
-        materializedReferenceType: 'character',
-        materializedReferenceName: character.name,
-        ...derivedMeta,
-      },
-    })
+      })
+      preloadedOutputs[imageNodeId] = { image: imageUrl }
+    } else {
+      const promptNodeId = `${params.storyboardNodeId}__${suffix}__prompt`
 
-    edges.push({
-      id: `${promptNodeId}__to__${imageNodeId}`,
-      source: promptNodeId,
-      sourceHandle: 'text',
-      target: imageNodeId,
-      targetHandle: 'prompt',
-      animated: true,
-      style: { strokeWidth: 2, stroke: '#8b5cf6' },
-    })
+      nodes.push({
+        id: promptNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 40, y: referenceY },
+        data: {
+          nodeType: 'text-input',
+          label: `${character.name} Ref Prompt`,
+          config: { content: character.prompt },
+          materializedReferenceType: 'character',
+          materializedReferenceName: character.name,
+          ...derivedMeta,
+        },
+      })
+
+      nodes.push({
+        id: imageNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 280, y: referenceY - 20 },
+        data: {
+          nodeType: 'image-generate',
+          label: `${character.name} Ref Image`,
+          config: {
+            provider: 'flux',
+            model: '',
+            artStyle,
+            customPrompt: '',
+            negativePrompt: '',
+            aspectRatio: '1:1',
+            resolution: '2K',
+          },
+          materializedReferenceType: 'character',
+          materializedReferenceName: character.name,
+          ...derivedMeta,
+        },
+      })
+
+      edges.push({
+        id: `${promptNodeId}__to__${imageNodeId}`,
+        source: promptNodeId,
+        sourceHandle: 'text',
+        target: imageNodeId,
+        targetHandle: 'prompt',
+        animated: true,
+        style: { strokeWidth: 2, stroke: '#8b5cf6' },
+      })
+    }
 
     registerReferenceNodeIds(
       characterReferenceNodeIds,
-      [character.name, ...character.aliases],
+      [character.assetId, character.name, ...character.aliases],
       imageNodeId,
     )
     referenceY += 150
@@ -401,60 +511,90 @@ export function buildStoryboardPanelGraph(params: {
 
   for (const [referenceIndex, scene] of sceneReferences.entries()) {
     const suffix = `scene_ref_${referenceIndex + 1}`
-    const promptNodeId = `${params.storyboardNodeId}__${suffix}__prompt`
     const imageNodeId = `${params.storyboardNodeId}__${suffix}__image`
+    const imageUrl = readString(scene.imageUrl)
 
-    nodes.push({
-      id: promptNodeId,
-      parentId: groupId,
-      extent: 'parent',
-      type: 'workflowNode',
-      position: { x: 40, y: referenceY },
-      data: {
-        nodeType: 'text-input',
-        label: `${scene.name} Scene Prompt`,
-        config: { content: scene.prompt },
-        materializedReferenceType: 'scene',
-        materializedReferenceName: scene.name,
-        ...derivedMeta,
-      },
-    })
-
-    nodes.push({
-      id: imageNodeId,
-      parentId: groupId,
-      extent: 'parent',
-      type: 'workflowNode',
-      position: { x: 280, y: referenceY - 20 },
-      data: {
-        nodeType: 'image-generate',
-        label: `${scene.name} Scene Image`,
-        config: {
-          provider: 'flux',
-          model: '',
-          artStyle,
-          customPrompt: '',
-          negativePrompt: '',
-          aspectRatio: '16:9',
-          resolution: '2K',
+    if (imageUrl) {
+      nodes.push({
+        id: imageNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 280, y: referenceY - 20 },
+        data: {
+          nodeType: 'reference-image',
+          label: `${scene.name} Scene Image`,
+          config: {
+            imageUrl,
+          },
+          initialOutput: {
+            image: imageUrl,
+          },
+          materializedReferenceType: 'scene',
+          materializedReferenceName: scene.name,
+          materializedReferenceSource: 'asset-hub',
+          ...derivedMeta,
         },
-        materializedReferenceType: 'scene',
-        materializedReferenceName: scene.name,
-        ...derivedMeta,
-      },
-    })
+      })
+      preloadedOutputs[imageNodeId] = { image: imageUrl }
+    } else {
+      const promptNodeId = `${params.storyboardNodeId}__${suffix}__prompt`
 
-    edges.push({
-      id: `${promptNodeId}__to__${imageNodeId}`,
-      source: promptNodeId,
-      sourceHandle: 'text',
-      target: imageNodeId,
-      targetHandle: 'prompt',
-      animated: true,
-      style: { strokeWidth: 2, stroke: '#22c55e' },
-    })
+      nodes.push({
+        id: promptNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 40, y: referenceY },
+        data: {
+          nodeType: 'text-input',
+          label: `${scene.name} Scene Prompt`,
+          config: { content: scene.prompt },
+          materializedReferenceType: 'scene',
+          materializedReferenceName: scene.name,
+          ...derivedMeta,
+        },
+      })
+
+      nodes.push({
+        id: imageNodeId,
+        parentId: groupId,
+        extent: 'parent',
+        type: 'workflowNode',
+        position: { x: 280, y: referenceY - 20 },
+        data: {
+          nodeType: 'image-generate',
+          label: `${scene.name} Scene Image`,
+          config: {
+            provider: 'flux',
+            model: '',
+            artStyle,
+            customPrompt: '',
+            negativePrompt: '',
+            aspectRatio: '16:9',
+            resolution: '2K',
+          },
+          materializedReferenceType: 'scene',
+          materializedReferenceName: scene.name,
+          ...derivedMeta,
+        },
+      })
+
+      edges.push({
+        id: `${promptNodeId}__to__${imageNodeId}`,
+        source: promptNodeId,
+        sourceHandle: 'text',
+        target: imageNodeId,
+        targetHandle: 'prompt',
+        animated: true,
+        style: { strokeWidth: 2, stroke: '#22c55e' },
+      })
+    }
 
     registerReferenceNodeIds(sceneReferenceNodeIds, [scene.name], imageNodeId)
+    if (scene.assetId) {
+      registerReferenceNodeIds(sceneReferenceNodeIds, [scene.assetId], imageNodeId)
+    }
     referenceY += 150
   }
 
@@ -569,12 +709,17 @@ export function buildStoryboardPanelGraph(params: {
     })
 
     const referenceNodeIds = new Set<string>()
+    for (const characterAssetId of panel.characterAssetIds) {
+      const matchedByAssetId = characterReferenceNodeIds.get(normalizeMatchKey(characterAssetId))
+      if (matchedByAssetId) referenceNodeIds.add(matchedByAssetId)
+    }
     for (const characterName of panel.characters) {
       const matchedNodeId = characterReferenceNodeIds.get(normalizeMatchKey(characterName))
       if (matchedNodeId) referenceNodeIds.add(matchedNodeId)
     }
-    if (panel.location) {
-      const matchedSceneNodeId = sceneReferenceNodeIds.get(normalizeMatchKey(panel.location))
+    const sceneLookupKey = panel.locationAssetId || panel.location
+    if (sceneLookupKey) {
+      const matchedSceneNodeId = sceneReferenceNodeIds.get(normalizeMatchKey(sceneLookupKey))
       if (matchedSceneNodeId) referenceNodeIds.add(matchedSceneNodeId)
     }
 
@@ -598,5 +743,6 @@ export function buildStoryboardPanelGraph(params: {
     nodes,
     edges,
     groupId,
+    preloadedOutputs,
   }
 }

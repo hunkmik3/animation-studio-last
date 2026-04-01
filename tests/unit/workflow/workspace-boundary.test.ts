@@ -31,6 +31,10 @@ function makeNode(params: {
 describe('workflow workspace boundary contract', () => {
   it('classifies native, hybrid, and workspace-linked node boundaries', () => {
     expect(getWorkflowBoundaryDescriptor('text-input').kind).toBe('workflow-native')
+    expect(getWorkflowBoundaryDescriptor('character-assets').kind).toBe('workflow-native')
+    expect(getWorkflowBoundaryDescriptor('location-assets').kind).toBe('workflow-native')
+    expect(getWorkflowBoundaryDescriptor('shot-splitter').kind).toBe('workflow-native')
+    expect(getWorkflowBoundaryDescriptor('reference-image').kind).toBe('workflow-native')
     expect(getWorkflowBoundaryDescriptor('image-generate').kind).toBe('hybrid')
     expect(getWorkflowBoundaryDescriptor('voice-synthesis').kind).toBe('hybrid')
   })
