@@ -28,11 +28,13 @@ describe('workflow continuity memory state updater', () => {
               locationName: 'Secret Backroom',
               locationAssetId: '',
               referenceSource: 'asset-hub',
+              environmentLockTokens: ['stone fireplace', 'long wooden table'],
             },
           },
           identity: {
             characterNames: ['Clara Queen'],
             appearanceLockTokens: ['royal gown'],
+            environmentLockTokens: ['candlelit war chamber'],
           },
         },
       },
@@ -58,6 +60,7 @@ describe('workflow continuity memory state updater', () => {
       locationName: 'Secret Backroom',
       preferredReferenceImage: '/m/room-reference',
       latestGoodImage: '/m/panel-2-image',
+      environmentLockTokens: ['stone fireplace', 'long wooden table', 'candlelit war chamber'],
       continuityStrength: 'strong',
     }))
   })

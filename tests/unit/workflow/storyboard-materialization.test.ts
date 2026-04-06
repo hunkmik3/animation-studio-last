@@ -309,10 +309,12 @@ describe('storyboard materialization helpers', () => {
           ]),
           locationReference: expect.objectContaining({
             locationName: 'Shiganshina Gate',
+            environmentLockTokens: expect.arrayContaining(['Shiganshina Gate']),
           }),
         }),
         identity: expect.objectContaining({
           hasAppearanceLock: true,
+          environmentLockTokens: expect.arrayContaining(['Shiganshina Gate']),
         }),
       }),
     }))

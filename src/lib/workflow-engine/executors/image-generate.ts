@@ -188,6 +188,70 @@ function readContinuityStateAppearanceTokens(inputs: Record<string, unknown>): s
   return readStringArrayLoose((identity as Record<string, unknown>).appearanceLockTokens)
 }
 
+function readContinuityStateEnvironmentTokens(inputs: Record<string, unknown>): string[] {
+  const continuityState = readContinuityStateRecord(inputs)
+  const identity = continuityState.identity
+  const identityTokens = (!identity || typeof identity !== 'object' || Array.isArray(identity))
+    ? []
+    : readStringArrayLoose((identity as Record<string, unknown>).environmentLockTokens)
+
+  const locationSource = readContinuityStateLocationSource(inputs)
+  const locationTokens = locationSource
+    ? readStringArrayLoose(locationSource.environmentLockTokens)
+    : []
+
+  return uniqueStrings([...identityTokens, ...locationTokens])
+}
+
+function readEnvironmentLockTokens(records: Array<Record<string, unknown>>): string[] {
+  return uniqueStrings(
+    records
+      .filter((record) => readContinuityKind(record.continuityKind) === 'location-reference')
+      .flatMap((record) => readStringArrayLoose(record.environmentLockTokens)),
+  )
+}
+
+function buildContinuityPrompt(params: {
+  prompt: string
+  continuityReferenceCount: number
+  previousPanelReferenceCount: number
+  characterReferenceCount: number
+  locationReferenceCount: number
+  continuityCharacterNames: string[]
+  continuityLocationNames: string[]
+  appearanceLockTokens: string[]
+  environmentLockTokens: string[]
+}): string {
+  if (params.continuityReferenceCount <= 0) {
+    return params.prompt
+  }
+
+  const lines: string[] = [
+    '[Continuity Constraints]',
+    'Treat provided references as canonical continuity anchors.',
+    'Keep character identity and outfit continuity unless the scene explicitly requires a visible change.',
+    'Keep environment geometry and background prop continuity unless the scene explicitly requires a visible change.',
+    'Do not add or remove background objects not implied by the current panel action.',
+    'Preserve camera side/orientation relative to the environment layout when continuing a sequence.',
+    `Continuity sources: previous-panel=${params.previousPanelReferenceCount}, character=${params.characterReferenceCount}, location=${params.locationReferenceCount}.`,
+  ]
+
+  if (params.continuityCharacterNames.length > 0) {
+    lines.push(`Character anchors: ${params.continuityCharacterNames.join(', ')}.`)
+  }
+  if (params.continuityLocationNames.length > 0) {
+    lines.push(`Location anchors: ${params.continuityLocationNames.join(', ')}.`)
+  }
+  if (params.appearanceLockTokens.length > 0) {
+    lines.push(`Appearance lock cues: ${params.appearanceLockTokens.join(' | ')}.`)
+  }
+  if (params.environmentLockTokens.length > 0) {
+    lines.push(`Environment lock cues: ${params.environmentLockTokens.join(' | ')}.`)
+  }
+
+  return `${params.prompt}\n\n${lines.join('\n')}`
+}
+
 function readLocationName(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -205,6 +269,7 @@ interface ContinuityMemoryLocationResolution {
   latestReferences: string[]
   usedKeys: string[]
   missingKeys: string[]
+  environmentTokens: string[]
 }
 
 function resolveCharacterContinuityMemory(params: {
@@ -265,6 +330,7 @@ function resolveLocationContinuityMemory(params: {
   const latestReferences: string[] = []
   const usedKeys: string[] = []
   const missingKeys: string[] = []
+  const environmentTokens: string[] = []
 
   const lookupRequests: Array<{ locationAssetId?: string; locationName?: string }> = []
   if (params.continuityStateLocation) {
@@ -295,6 +361,7 @@ function resolveLocationContinuityMemory(params: {
     usedKeys.push(key)
     if (entry.preferredReferenceImage) preferredReferences.push(entry.preferredReferenceImage)
     if (entry.latestGoodImage) latestReferences.push(entry.latestGoodImage)
+    environmentTokens.push(...entry.environmentLockTokens)
   }
 
   return {
@@ -302,6 +369,7 @@ function resolveLocationContinuityMemory(params: {
     latestReferences: uniqueStrings(latestReferences),
     usedKeys: uniqueStrings(usedKeys),
     missingKeys: uniqueStrings(missingKeys),
+    environmentTokens: uniqueStrings(environmentTokens),
   }
 }
 
@@ -382,7 +450,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
       throw new Error('Image generation requires a prompt input or custom prompt.')
     }
     const { artStyle, artStylePrompt } = resolveWorkflowArtStylePrompt(ctx.config.artStyle, ctx.locale)
-    const prompt = applyWorkflowArtStyleToPrompt({
+    const styledPrompt = applyWorkflowArtStyleToPrompt({
       prompt: basePrompt,
       artStylePrompt,
       locale: ctx.locale,
@@ -409,6 +477,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     const continuityStateLocation = readContinuityStateLocationSource(ctx.inputs)
     const continuityStateCharacterNames = readContinuityStateCharacterNames(ctx.inputs)
     const continuityStateAppearanceTokens = readContinuityStateAppearanceTokens(ctx.inputs)
+    const continuityStateEnvironmentTokens = readContinuityStateEnvironmentTokens(ctx.inputs)
     const continuityMemory = normalizeWorkflowContinuityMemory(ctx.inputs.continuityMemory)
     const previousPanelReferences = await normalizeStandaloneMediaInput(ctx.inputs.previousPanelReference)
     const characterReferences = await normalizeStandaloneMediaInput(ctx.inputs.characterReference)
@@ -460,6 +529,11 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
       ...continuityStateAppearanceTokens,
       ...characterMemoryResolution.appearanceTokens,
     ])
+    const environmentLockTokens = uniqueStrings([
+      ...readEnvironmentLockTokens(continuityMetaRecords),
+      ...continuityStateEnvironmentTokens,
+      ...locationMemoryResolution.environmentTokens,
+    ])
     const continuityMemoryCharacterReferenceCount = (
       continuityMemoryCharacterPreferredReferences.length
       + continuityMemoryCharacterLatestReferences.length
@@ -470,6 +544,24 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     )
     const effectiveCharacterReferenceCount = characterReferences.length + continuityMemoryCharacterReferenceCount
     const effectiveLocationReferenceCount = locationReferences.length + continuityMemoryLocationReferenceCount
+    const continuityReferenceCount = (
+      previousPanelReferences.length
+      + characterReferences.length
+      + locationReferences.length
+      + continuityMemoryCharacterReferenceCount
+      + continuityMemoryLocationReferenceCount
+    )
+    const compiledPrompt = buildContinuityPrompt({
+      prompt: styledPrompt,
+      continuityReferenceCount,
+      previousPanelReferenceCount: previousPanelReferences.length,
+      characterReferenceCount: effectiveCharacterReferenceCount,
+      locationReferenceCount: effectiveLocationReferenceCount,
+      continuityCharacterNames,
+      continuityLocationNames,
+      appearanceLockTokens,
+      environmentLockTokens,
+    })
     const continuityStrength = classifyContinuityStrength({
       previousPanelReferenceCount: previousPanelReferences.length,
       characterReferenceCount: effectiveCharacterReferenceCount,
@@ -499,6 +591,9 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     if (effectiveCharacterReferenceCount > 0 && appearanceLockTokens.length === 0) {
       warnings.push('Character references resolved but appearance lock tokens are empty; look/outfit consistency may drift.')
     }
+    if (effectiveLocationReferenceCount > 0 && environmentLockTokens.length === 0) {
+      warnings.push('Environment continuity lock tokens are empty; background object continuity may drift.')
+    }
     if (
       continuityCharacterNames.length > 0
       && effectiveCharacterReferenceCount === 0
@@ -525,7 +620,7 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
     }
     const mediaRefs: MediaRef[] = []
     for (let index = 0; index < candidateCount; index += 1) {
-      const result = await generateImage(ctx.userId, imageModel, prompt, {
+      const result = await generateImage(ctx.userId, imageModel, compiledPrompt, {
         ...(referenceImages.length > 0 ? { referenceImages } : {}),
         ...(aspectRatio ? { aspectRatio } : {}),
         ...(negativePrompt ? { negativePrompt } : {}),
@@ -562,20 +657,14 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
         imageUrl: primaryMedia.url,
         imageMediaId: primaryMedia.id,
         ...(candidateImages.length > 1 ? { candidateImages } : {}),
-        usedPrompt: prompt,
+        usedPrompt: compiledPrompt,
       },
       message: 'Image generated',
       metadata: {
         mode: 'standalone',
         imageModel,
         referenceImageCount: referenceImages.length,
-        continuityReferenceCount: (
-          previousPanelReferences.length
-          + characterReferences.length
-          + locationReferences.length
-          + continuityMemoryCharacterReferenceCount
-          + continuityMemoryLocationReferenceCount
-        ),
+        continuityReferenceCount,
         previousPanelReferenceCount: previousPanelReferences.length,
         characterReferenceCount: characterReferences.length,
         effectiveCharacterReferenceCount,
@@ -607,6 +696,8 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
         continuityLocationName: continuityLocationNames[0] || null,
         appearanceLockTokenCount: appearanceLockTokens.length,
         appearanceLockTokens,
+        environmentLockTokenCount: environmentLockTokens.length,
+        environmentLockTokens,
         continuityStrength,
         warnings,
         continuitySourceNodeId,

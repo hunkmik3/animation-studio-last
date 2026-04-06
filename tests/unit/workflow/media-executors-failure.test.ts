@@ -211,11 +211,12 @@ describe('workflow media executors standalone behavior', () => {
     expect(mockGenerateImage).toHaveBeenCalledWith(
       'user_1',
       'fal::flux-pro',
-      'Panel 2 with continuity',
+      expect.stringContaining('Panel 2 with continuity'),
       expect.objectContaining({
         referenceImages: ['/m/panel-1-ref', '/m/character-ref'],
       }),
     )
+    expect(mockGenerateImage.mock.calls[0]?.[2]).toContain('[Continuity Constraints]')
     expect(result.metadata).toEqual(expect.objectContaining({
       continuityReferenceCount: 1,
       previousPanelReferenceCount: 1,
@@ -258,6 +259,7 @@ describe('workflow media executors standalone behavior', () => {
             continuityKind: 'location-reference',
             sourceNodeId: 'storyboard_1__scene_ref_1__image',
             locationName: 'Secret Backroom',
+            environmentLockTokens: ['stone walls', 'long wooden table'],
           },
         ],
         continuityMissingMeta: [
@@ -273,11 +275,12 @@ describe('workflow media executors standalone behavior', () => {
     expect(mockGenerateImage).toHaveBeenCalledWith(
       'user_1',
       'fal::flux-pro',
-      'Panel 3 escalation shot',
+      expect.stringContaining('Panel 3 escalation shot'),
       expect.objectContaining({
         referenceImages: ['/m/queen-ref', '/m/secret-room-ref', '/m/manual-frame'],
       }),
     )
+    expect(mockGenerateImage.mock.calls[0]?.[2]).toContain('Environment lock cues:')
     expect(result.metadata).toEqual(expect.objectContaining({
       continuityReferenceCount: 2,
       previousPanelReferenceCount: 0,
@@ -291,9 +294,9 @@ describe('workflow media executors standalone behavior', () => {
       continuityMissingKinds: ['previous-panel-image'],
       continuityCharacterNames: ['Clara Queen'],
       appearanceLockTokenCount: 3,
-      warnings: [
+      warnings: expect.arrayContaining([
         'Previous-panel continuity source is missing output. Run the earlier panel image first.',
-      ],
+      ]),
     }))
   })
 
@@ -374,7 +377,7 @@ describe('workflow media executors standalone behavior', () => {
     expect(mockGenerateImage).toHaveBeenCalledWith(
       'user_1',
       'fal::flux-pro',
-      'Panel 4 continuity test',
+      expect.stringContaining('Panel 4 continuity test'),
       expect.objectContaining({
         referenceImages: [
           '/m/memory-clara-preferred',
@@ -385,6 +388,7 @@ describe('workflow media executors standalone behavior', () => {
         ],
       }),
     )
+    expect(mockGenerateImage.mock.calls[0]?.[2]).toContain('[Continuity Constraints]')
     expect(result.metadata).toEqual(expect.objectContaining({
       continuityMemoryActive: true,
       continuityMemoryReferenceCount: 4,

@@ -21,6 +21,7 @@ export interface WorkflowContinuityCharacterMemory {
 export interface WorkflowContinuityLocationMemory {
   locationName: string
   locationAssetId: string
+  environmentLockTokens: string[]
   preferredReferenceImage: string | null
   latestGoodImage: string | null
   sourceNodeId: string | null
@@ -112,6 +113,10 @@ function isWorkflowContinuityLocationMemory(value: unknown): value is WorkflowCo
   const record = value as Record<string, unknown>
   if (typeof record.locationName !== 'string') return false
   if (typeof record.locationAssetId !== 'string') return false
+  if (
+    record.environmentLockTokens !== undefined
+    && (!Array.isArray(record.environmentLockTokens) || !record.environmentLockTokens.every((item) => typeof item === 'string'))
+  ) return false
   if (record.preferredReferenceImage !== null && record.preferredReferenceImage !== undefined && typeof record.preferredReferenceImage !== 'string') return false
   if (record.latestGoodImage !== null && record.latestGoodImage !== undefined && typeof record.latestGoodImage !== 'string') return false
   if (record.sourceNodeId !== null && record.sourceNodeId !== undefined && typeof record.sourceNodeId !== 'string') return false
@@ -261,6 +266,7 @@ export function normalizeWorkflowContinuityMemory(
     normalizedLocations[key] = {
       locationName: readString(entryRecord.locationName),
       locationAssetId: readString(entryRecord.locationAssetId),
+      environmentLockTokens: uniqueStrings(readStringArray(entryRecord.environmentLockTokens)),
       preferredReferenceImage: readOptionalString(entryRecord.preferredReferenceImage),
       latestGoodImage: readOptionalString(entryRecord.latestGoodImage),
       sourceNodeId: readOptionalString(entryRecord.sourceNodeId),

@@ -23,6 +23,7 @@ interface ImageNodeContinuityLocationSource {
   locationName: string
   locationAssetId: string
   referenceSource: string
+  environmentLockTokens: string[]
 }
 
 interface ParsedImageNodeContinuityState {
@@ -33,6 +34,7 @@ interface ParsedImageNodeContinuityState {
   locationSource: ImageNodeContinuityLocationSource | null
   identityCharacterNames: string[]
   identityAppearanceLockTokens: string[]
+  identityEnvironmentLockTokens: string[]
 }
 
 interface WorkflowContinuityMemoryUpdateResult {
@@ -142,6 +144,7 @@ function parseImageNodeContinuityState(nodeId: string, nodeData: Record<string, 
       locationName: readString(locationRecord.locationName),
       locationAssetId: readString(locationRecord.locationAssetId),
       referenceSource: readString(locationRecord.referenceSource),
+      environmentLockTokens: readStringArray(locationRecord.environmentLockTokens),
     }
     : null
 
@@ -153,6 +156,7 @@ function parseImageNodeContinuityState(nodeId: string, nodeData: Record<string, 
     locationSource,
     identityCharacterNames: readStringArray(identityRecord.characterNames),
     identityAppearanceLockTokens: readStringArray(identityRecord.appearanceLockTokens),
+    identityEnvironmentLockTokens: readStringArray(identityRecord.environmentLockTokens),
   }
 }
 
@@ -174,6 +178,7 @@ export function updateWorkflowContinuityMemoryFromImageNode(params: {
   const continuityState = parseImageNodeContinuityState(params.nodeId, params.nodeData)
   const metadataCharacterNames = readStringArrayLoose(params.executorMetadata.continuityCharacterNames)
   const metadataAppearanceLockTokens = readStringArrayLoose(params.executorMetadata.appearanceLockTokens)
+  const metadataEnvironmentLockTokens = readStringArrayLoose(params.executorMetadata.environmentLockTokens)
   const metadataSourceKinds = uniqueStrings(readStringArrayLoose(params.executorMetadata.continuitySourceKinds))
   const metadataStrength = readContinuityStrength(params.executorMetadata.continuityStrength)
 
@@ -298,6 +303,12 @@ export function updateWorkflowContinuityMemoryFromImageNode(params: {
       upsertLocationEntry(entryKey, (existing) => ({
         locationName: locationSource.locationName || existing?.locationName || '',
         locationAssetId: locationSource.locationAssetId || existing?.locationAssetId || '',
+        environmentLockTokens: uniqueStrings([
+          ...(existing?.environmentLockTokens || []),
+          ...locationSource.environmentLockTokens,
+          ...continuityState.identityEnvironmentLockTokens,
+          ...metadataEnvironmentLockTokens,
+        ]),
         preferredReferenceImage: sourceReferenceImage || existing?.preferredReferenceImage || latestGoodImage,
         latestGoodImage,
         sourceNodeId: params.nodeId,
@@ -324,6 +335,11 @@ export function updateWorkflowContinuityMemoryFromImageNode(params: {
       upsertLocationEntry(fallbackLocationKey, (existing) => ({
         locationName: locationNameFromMetadata || existing?.locationName || '',
         locationAssetId: existing?.locationAssetId || '',
+        environmentLockTokens: uniqueStrings([
+          ...(existing?.environmentLockTokens || []),
+          ...continuityState.identityEnvironmentLockTokens,
+          ...metadataEnvironmentLockTokens,
+        ]),
         preferredReferenceImage: existing?.preferredReferenceImage || latestGoodImage,
         latestGoodImage,
         sourceNodeId: params.nodeId,

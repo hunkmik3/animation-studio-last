@@ -84,6 +84,7 @@ interface StoryboardLocationContinuityEdgeData extends Record<string, unknown> {
   toPanelNumber: number
   locationName: string
   locationAssetId: string
+  environmentLockTokens: string[]
 }
 
 interface StoryboardCharacterContinuityProfile {
@@ -100,6 +101,7 @@ interface StoryboardLocationContinuityProfile {
   name: string
   assetId: string
   referenceSource: 'asset-hub' | 'generated-reference'
+  environmentLockTokens: string[]
 }
 
 interface StoryboardPanelContinuityCharacterBinding {
@@ -182,6 +184,23 @@ function readFirstNonEmptyString(candidates: unknown[]): string {
     if (value) return value
   }
   return ''
+}
+
+function buildEnvironmentLockTokens(scene: StoryboardSceneReferenceSeed): string[] {
+  const normalizedPrompt = scene.prompt.replace(/\s+/g, ' ').trim()
+  const promptSegments = normalizedPrompt
+    .split(/[\n.;。！？!?]+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 12)
+    .slice(0, 3)
+
+  const compactPrompt = normalizedPrompt.length > 0 ? normalizedPrompt.slice(0, 200) : ''
+
+  return uniqueNames([
+    scene.name,
+    ...promptSegments,
+    compactPrompt,
+  ]).slice(0, 5)
 }
 
 function readCharacterExpectedAppearances(value: unknown): StoryboardCharacterExpectedAppearance[] {
@@ -643,6 +662,7 @@ function registerSceneContinuityProfile(
     name: scene.name,
     assetId: scene.assetId,
     referenceSource: scene.imageUrl ? 'asset-hub' : 'generated-reference',
+    environmentLockTokens: buildEnvironmentLockTokens(scene),
   }
   for (const key of [scene.assetId, scene.name]) {
     const normalized = normalizeMatchKey(key)
@@ -937,6 +957,10 @@ export function buildStoryboardPanelGraph(params: {
       ? sceneContinuityProfiles.get(normalizeMatchKey(locationLookupKey)) || null
       : null
     const locationReferenceNodeId = locationContinuityProfile?.referenceNodeId || null
+    const environmentLockTokens = uniqueNames([
+      ...(locationContinuityProfile?.environmentLockTokens || []),
+      panel.location,
+    ])
 
     const appearanceLockTokens = uniqueNames([
       ...characterBindings.flatMap((binding) => binding.appearanceLockTokens),
@@ -1022,12 +1046,14 @@ export function buildStoryboardPanelGraph(params: {
                 locationName: locationContinuityProfile.name,
                 locationAssetId: locationContinuityProfile.assetId,
                 referenceSource: locationContinuityProfile.referenceSource,
+                environmentLockTokens,
               }
               : null,
           },
           identity: {
             characterNames: uniqueNames(characterBindings.map((binding) => binding.characterName)),
             appearanceLockTokens,
+            environmentLockTokens,
             hasAppearanceLock: appearanceLockTokens.length > 0,
           },
         },
@@ -1142,6 +1168,7 @@ export function buildStoryboardPanelGraph(params: {
         toPanelNumber: panelLabel,
         locationName: locationContinuityProfile.name,
         locationAssetId: locationContinuityProfile.assetId,
+        environmentLockTokens,
       }
       edges.push({
         id: `${locationReferenceNodeId}__to__${imageNodeId}__location_reference`,
