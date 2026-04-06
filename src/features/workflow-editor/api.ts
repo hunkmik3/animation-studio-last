@@ -5,6 +5,7 @@
 import type { NodeExecutionState } from '@/lib/workflow-engine/types'
 import type { WorkflowContinuationMarker } from '@/lib/workflow-engine/continuation'
 import type { WorkflowExecutionCursor, WorkflowExecutionLease } from '@/lib/workflow-engine/execution-authority'
+import type { WorkflowContinuityMemory } from '@/lib/workflow-engine/continuity-memory'
 
 export interface WorkflowListItem {
     id: string
@@ -182,6 +183,7 @@ export async function persistNodeOutput(workflowId: string, data: {
     status?: string
     continuation?: WorkflowContinuationMarker | null
     cursor?: WorkflowExecutionCursor | null
+    continuityMemory?: WorkflowContinuityMemory | null
     leaseId?: string
 }) {
     const res = await fetch(`/api/workflows/${workflowId}/executions`, {
@@ -230,6 +232,7 @@ export async function fetchExecutionOutputs(workflowId: string) {
         continuation: WorkflowContinuationMarker | null
         cursor: WorkflowExecutionCursor | null
         lease: WorkflowExecutionLease | null
+        continuityMemory: WorkflowContinuityMemory | null
     }>
 }
 

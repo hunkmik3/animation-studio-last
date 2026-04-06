@@ -26,6 +26,11 @@ import type { ExecutionStatus, NodeExecutionState } from '@/lib/workflow-engine/
 import type { WorkflowContinuationMarker } from '@/lib/workflow-engine/continuation'
 import type { WorkflowExecutionCursor, WorkflowExecutionLease } from '@/lib/workflow-engine/execution-authority'
 import { isWorkflowExecutionLeaseExpired } from '@/lib/workflow-engine/execution-authority'
+import {
+    createEmptyWorkflowContinuityMemory,
+    normalizeWorkflowContinuityMemory,
+    type WorkflowContinuityMemory,
+} from '@/lib/workflow-engine/continuity-memory'
 import { acquireExecutionResumeLease, persistNodeOutput, startWorkflowExecution, updateExecutionStatus } from './api'
 import { isUsableNodeOutput, resolvePanelIdFromNode } from './execution-contract'
 import { buildWorkflowGraphSignature } from './execution-signature'
@@ -41,6 +46,7 @@ import {
     extractStoryboardPanelsFromOutputs,
     extractStoryboardSceneReferenceSeeds,
 } from './storyboard-materialization'
+import { updateWorkflowContinuityMemoryFromImageNode } from './continuity-memory-state'
 import { collectWorkflowNodeInputs } from '@/lib/workflow-engine/input-collection'
 import { normalizeWorkflowArtStyle } from '@/lib/workflow-engine/art-style'
 
@@ -212,9 +218,11 @@ interface WorkflowStore {
     recoverableContinuation: PendingWorkflowContinuation | null
     continuationRecovery: ContinuationRecoveryState
     continuationInFlightKey: string | null
+    continuityMemory: WorkflowContinuityMemory
     setExecutionStatus: (status: ExecutionStatus) => void
     setNodeExecutionState: (nodeId: string, state: NodeExecutionState) => void
     setNodeOutput: (nodeId: string, outputs: Record<string, unknown>) => void
+    setContinuityMemory: (memory: WorkflowContinuityMemory | null | undefined) => void
     resetExecution: () => void
     executeSingleNode: (nodeId: string) => Promise<void>
     executeWorkflow: () => Promise<void>
@@ -236,6 +244,7 @@ interface WorkflowStore {
         continuation: WorkflowContinuationMarker | null
         cursor: WorkflowExecutionCursor | null
         lease: WorkflowExecutionLease | null
+        continuityMemory?: WorkflowContinuityMemory | null
     }) => void
     forceRerunNode: (nodeId: string) => Promise<void>
     forceRerunAll: () => Promise<void>
@@ -384,6 +393,40 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
                 return
             }
             // continuation persistence is best-effort
+        }
+    }
+
+    const persistContinuityMemory = async (
+        continuityMemory: WorkflowContinuityMemory | null,
+        options?: { allowCreateExecution?: boolean },
+    ) => {
+        const workflowId = get().meta?.id
+        if (!workflowId) return
+
+        const executionId = get().currentExecutionId
+        const leaseId = get().activeExecutionLeaseId
+        const allowCreateExecution = options?.allowCreateExecution === true
+        if (!executionId && !allowCreateExecution) return
+
+        try {
+            const normalizedMemory = continuityMemory
+                ? normalizeWorkflowContinuityMemory(continuityMemory)
+                : null
+            const response = await persistNodeOutput(workflowId, {
+                executionId: executionId || undefined,
+                nodeId: '',
+                continuityMemory: normalizedMemory,
+                leaseId: leaseId || undefined,
+            })
+            if (response?.executionId && !get().currentExecutionId) {
+                set({ currentExecutionId: response.executionId })
+            }
+        } catch (error) {
+            if (isExecutionAuthorityConflict(error)) {
+                handleExecutionAuthorityConflict('Execution authority conflict detected while persisting continuity memory.')
+                return
+            }
+            // continuity memory persistence is best-effort
         }
     }
 
@@ -762,11 +805,13 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
     recoverableContinuation: null,
     continuationRecovery: { status: 'idle', reason: null },
     continuationInFlightKey: null,
+    continuityMemory: createEmptyWorkflowContinuityMemory(),
     setExecutionStatus: (status) => set({ executionStatus: status }),
     setNodeExecutionState: (nodeId, state) =>
         set((s) => ({ nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: state } })),
     setNodeOutput: (nodeId, outputs) =>
         set((s) => ({ nodeOutputs: { ...s.nodeOutputs, [nodeId]: outputs } })),
+    setContinuityMemory: (memory) => set({ continuityMemory: normalizeWorkflowContinuityMemory(memory) }),
     resetExecution: () => set({
         executionStatus: 'idle',
         nodeExecutionStates: {},
@@ -799,6 +844,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
         const hydratedStates: Record<string, NodeExecutionState> = {}
         const usablePersistedOutputs: Record<string, PersistedNodeOutput> = {}
         const persistedOutputData = data.outputData || {}
+        const normalizedContinuityMemory = normalizeWorkflowContinuityMemory(data.continuityMemory)
         const clientInstanceId = get().clientInstanceId
         const nodeTypeById = new Map(
             get().nodes.map((node) => [node.id, toRecord(node.data).nodeType]).map(([id, nodeType]) => [
@@ -914,6 +960,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
             recoverableContinuation,
             continuationRecovery,
             continuationInFlightKey: null,
+            continuityMemory: normalizedContinuityMemory,
             nodeExecutionStates: {
                 ...get().nodeExecutionStates,
                 ...persistedNodeStates,
@@ -1058,11 +1105,20 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
                 }
             }))
 
+            const requestInputs: Record<string, unknown> = { ...inputs }
+            if (nodeType === 'image-generate' && !usesWorkspaceContext) {
+                const continuityState = toRecord(nodeData.continuityState)
+                if (Object.keys(continuityState).length > 0) {
+                    requestInputs.continuityState = continuityState
+                }
+                requestInputs.continuityMemory = normalizeWorkflowContinuityMemory(get().continuityMemory)
+            }
+
             const requestBody: Record<string, unknown> = {
                 nodeType,
                 nodeId,
                 config,
-                inputs,
+                inputs: requestInputs,
             }
             if (projectId && usesWorkspaceContext) {
                 requestBody.projectId = projectId
@@ -1130,6 +1186,20 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
                     nodeOutputs: { ...s.nodeOutputs, [nodeId]: mergedOutputs },
                     nodeExecutionStates: { ...s.nodeExecutionStates, [nodeId]: nodeState }
                 }))
+                if (nodeType === 'image-generate' && !usesWorkspaceContext) {
+                    const continuityUpdate = updateWorkflowContinuityMemoryFromImageNode({
+                        memory: get().continuityMemory,
+                        nodeId,
+                        nodeData,
+                        nodeOutputs: { ...get().nodeOutputs, [nodeId]: mergedOutputs },
+                        resultOutputs: mergedOutputs,
+                        executorMetadata: metadata,
+                    })
+                    if (continuityUpdate.changed) {
+                        set({ continuityMemory: continuityUpdate.memory })
+                        void persistContinuityMemory(continuityUpdate.memory, { allowCreateExecution: false })
+                    }
+                }
                 persistState(nodeState, mergedOutputs)
                 return
             }
@@ -1256,6 +1326,13 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
             continuationInFlightKey: null,
             nodeExecutionStates: pendingStates,
         })
+        const continuityMemory = normalizeWorkflowContinuityMemory(get().continuityMemory)
+        if (
+            Object.keys(continuityMemory.characters).length > 0
+            || Object.keys(continuityMemory.locations).length > 0
+        ) {
+            void persistContinuityMemory(continuityMemory, { allowCreateExecution: false })
+        }
         void persistContinuationMarker(null, { allowCreateExecution: false })
         void persistExecutionCursor(buildExecutionCursor({
             runToken,
@@ -1594,6 +1671,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
             nodeExecutionStates: {},
             currentExecutionId: null,
             persistedOutputs: null,
+            continuityMemory: createEmptyWorkflowContinuityMemory(),
             activeRunToken: null,
             activeExecutionLeaseId: null,
             executionCursor: null,
@@ -1620,6 +1698,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => {
             nodeOutputs: {},
             currentExecutionId: null,
             persistedOutputs: null,
+            continuityMemory: createEmptyWorkflowContinuityMemory(),
             activeRunToken: null,
             activeExecutionLeaseId: null,
             executionCursor: null,

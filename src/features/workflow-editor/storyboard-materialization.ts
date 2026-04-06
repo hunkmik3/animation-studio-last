@@ -6,6 +6,12 @@ export interface StoryboardCharacterReferenceSeed {
   aliases: string[]
   prompt: string
   imageUrl: string | null
+  appearance: string
+  primaryIdentifier: string
+  visualKeywords: string[]
+  selectedAppearanceId: string
+  expectedAppearances: StoryboardCharacterExpectedAppearance[]
+  referenceSource: 'asset-hub' | 'generated-reference' | 'unknown'
 }
 
 export interface StoryboardSceneReferenceSeed {
@@ -24,8 +30,23 @@ export interface StoryboardPanelSeed {
   videoPrompt: string
   characters: string[]
   characterAssetIds: string[]
+  characterContinuity: StoryboardPanelCharacterContinuitySeed[]
   location: string
   locationAssetId: string
+}
+
+export interface StoryboardCharacterExpectedAppearance {
+  id: string
+  changeReason: string
+  description: string
+}
+
+export interface StoryboardPanelCharacterContinuitySeed {
+  name: string
+  assetId: string
+  appearanceHint: string
+  appearanceId: string
+  identityHints: string[]
 }
 
 export interface StoryboardPanelGraphBuildResult {
@@ -33,6 +54,62 @@ export interface StoryboardPanelGraphBuildResult {
   edges: Edge[]
   groupId: string
   preloadedOutputs: Record<string, Record<string, unknown>>
+}
+
+interface StoryboardPanelContinuityEdgeData extends Record<string, unknown> {
+  continuityKind: 'previous-panel-image'
+  continuitySource: 'materialized-panel-chain'
+  fromPanelIndex: number
+  fromPanelNumber: number | null
+  toPanelIndex: number
+  toPanelNumber: number
+}
+
+interface StoryboardCharacterContinuityEdgeData extends Record<string, unknown> {
+  continuityKind: 'character-reference'
+  continuitySource: 'materialized-character-reference'
+  toPanelIndex: number
+  toPanelNumber: number
+  characterName: string
+  characterAssetId: string
+  appearanceLockTokens: string[]
+  panelAppearanceHints: string[]
+  identityTokens: string[]
+}
+
+interface StoryboardLocationContinuityEdgeData extends Record<string, unknown> {
+  continuityKind: 'location-reference'
+  continuitySource: 'materialized-location-reference'
+  toPanelIndex: number
+  toPanelNumber: number
+  locationName: string
+  locationAssetId: string
+}
+
+interface StoryboardCharacterContinuityProfile {
+  referenceNodeId: string
+  name: string
+  assetId: string
+  aliases: string[]
+  appearanceLockTokens: string[]
+  referenceSource: StoryboardCharacterReferenceSeed['referenceSource']
+}
+
+interface StoryboardLocationContinuityProfile {
+  referenceNodeId: string
+  name: string
+  assetId: string
+  referenceSource: 'asset-hub' | 'generated-reference'
+}
+
+interface StoryboardPanelContinuityCharacterBinding {
+  referenceNodeId: string
+  characterName: string
+  characterAssetId: string
+  appearanceLockTokens: string[]
+  panelAppearanceHints: string[]
+  identityTokens: string[]
+  referenceSource: StoryboardCharacterReferenceSeed['referenceSource']
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -99,41 +176,153 @@ function uniqueNames(values: string[]): string[] {
   return result
 }
 
-function parseCharacterRefs(value: unknown): { names: string[]; assetIds: string[] } {
+function readFirstNonEmptyString(candidates: unknown[]): string {
+  for (const candidate of candidates) {
+    const value = readString(candidate)
+    if (value) return value
+  }
+  return ''
+}
+
+function readCharacterExpectedAppearances(value: unknown): StoryboardCharacterExpectedAppearance[] {
+  const records = toObjectArray(value)
+  return records
+    .map((record, index) => {
+      const id = readString(record.id) || readString(record.appearanceId)
+      const changeReason = readString(record.change_reason)
+        || readString(record.changeReason)
+        || `Appearance ${index + 1}`
+      const description = readFirstNonEmptyString([
+        record.description,
+        record.descriptions,
+      ])
+      return {
+        id,
+        changeReason,
+        description,
+      }
+    })
+    .filter((appearance) => appearance.id || appearance.changeReason || appearance.description)
+}
+
+function readPanelCharacterContinuitySeed(record: Record<string, unknown>): StoryboardPanelCharacterContinuitySeed {
+  const name = readString(record.name)
+  const assetId = readAssetId(record)
+  const appearanceHint = readFirstNonEmptyString([
+    record.appearance,
+    record.look,
+    record.outfit,
+    record.costume,
+    record.description,
+  ])
+  const appearanceId = readFirstNonEmptyString([
+    record.appearance_id,
+    record.appearanceId,
+    record.selectedAppearanceId,
+  ])
+  const expectedAppearances = readCharacterExpectedAppearances(record.expected_appearances)
+  const identityHints = uniqueNames([
+    readString(record.primary_identifier),
+    ...readStringArray(record.visual_keywords),
+    ...expectedAppearances.map((appearance) => appearance.changeReason),
+    ...readStringArrayLoose(record.identity_hints),
+    appearanceHint,
+  ])
+
+  return {
+    name,
+    assetId,
+    appearanceHint,
+    appearanceId,
+    identityHints,
+  }
+}
+
+function mergePanelCharacterContinuity(
+  existing: StoryboardPanelCharacterContinuitySeed,
+  incoming: StoryboardPanelCharacterContinuitySeed,
+): StoryboardPanelCharacterContinuitySeed {
+  return {
+    name: incoming.name || existing.name,
+    assetId: incoming.assetId || existing.assetId,
+    appearanceHint: incoming.appearanceHint || existing.appearanceHint,
+    appearanceId: incoming.appearanceId || existing.appearanceId,
+    identityHints: uniqueNames([...existing.identityHints, ...incoming.identityHints]),
+  }
+}
+
+function parseCharacterRefs(value: unknown): {
+  names: string[]
+  assetIds: string[]
+  continuity: StoryboardPanelCharacterContinuitySeed[]
+} {
   if (Array.isArray(value)) {
-    const names = value.flatMap((item) => {
-      if (typeof item === 'string') return [item]
-      if (typeof item === 'object' && item !== null) {
-        return [readString((item as Record<string, unknown>).name)]
+    const names: string[] = []
+    const assetIds: string[] = []
+    const continuityByKey = new Map<string, StoryboardPanelCharacterContinuitySeed>()
+
+    for (const item of value) {
+      if (typeof item === 'string') {
+        const name = item.trim()
+        if (!name) continue
+        names.push(name)
+        const key = normalizeMatchKey(name)
+        const existing = continuityByKey.get(key)
+        const next: StoryboardPanelCharacterContinuitySeed = {
+          name,
+          assetId: '',
+          appearanceHint: '',
+          appearanceId: '',
+          identityHints: [],
+        }
+        continuityByKey.set(key, existing ? mergePanelCharacterContinuity(existing, next) : next)
+        continue
       }
-      return []
-    })
-    const assetIds = value.flatMap((item) => {
+
       if (typeof item === 'object' && item !== null) {
-        return [readAssetId(item as Record<string, unknown>)]
+        const record = item as Record<string, unknown>
+        const continuitySeed = readPanelCharacterContinuitySeed(record)
+        if (continuitySeed.name) names.push(continuitySeed.name)
+        if (continuitySeed.assetId) assetIds.push(continuitySeed.assetId)
+        const key = normalizeMatchKey(continuitySeed.assetId || continuitySeed.name)
+        if (!key) continue
+        const existing = continuityByKey.get(key)
+        continuityByKey.set(
+          key,
+          existing ? mergePanelCharacterContinuity(existing, continuitySeed) : continuitySeed,
+        )
       }
-      return []
-    })
+    }
+
     return {
       names: uniqueNames(names),
       assetIds: uniqueNames(assetIds),
+      continuity: Array.from(continuityByKey.values()),
     }
   }
 
   if (typeof value === 'string') {
     const rawValue = value.trim()
-    if (!rawValue) return { names: [], assetIds: [] }
+    if (!rawValue) return { names: [], assetIds: [], continuity: [] }
     try {
       return parseCharacterRefs(JSON.parse(rawValue) as unknown)
     } catch {
+      const names = uniqueNames(rawValue.split(/[,\n;，、]/g))
       return {
-        names: uniqueNames(rawValue.split(/[,\n;，、]/g)),
+        names,
         assetIds: [],
+        continuity: names.map((name) => ({
+          name,
+          assetId: '',
+          appearanceHint: '',
+          appearanceId: '',
+          identityHints: [],
+        })),
       }
     }
   }
 
-  return { names: [], assetIds: [] }
+  return { names: [], assetIds: [], continuity: [] }
 }
 
 function buildCharacterReferencePrompt(record: Record<string, unknown>): string {
@@ -217,6 +406,54 @@ function readReferenceImageUrl(record: Record<string, unknown>): string | null {
   return arrayCandidates[0] || null
 }
 
+function inferCharacterReferenceSource(record: Record<string, unknown>, imageUrl: string | null): StoryboardCharacterReferenceSeed['referenceSource'] {
+  const explicitSource = readString(record.referenceSource).toLowerCase()
+  if (explicitSource === 'asset-hub') return 'asset-hub'
+  if (explicitSource === 'generated-reference') return 'generated-reference'
+  if (!imageUrl) return 'generated-reference'
+  return 'unknown'
+}
+
+function mergeCharacterReferenceSeeds(
+  existing: StoryboardCharacterReferenceSeed,
+  incoming: StoryboardCharacterReferenceSeed,
+): StoryboardCharacterReferenceSeed {
+  const existingSourceWeight = existing.referenceSource === 'asset-hub' ? 3 : existing.referenceSource === 'unknown' ? 2 : 1
+  const incomingSourceWeight = incoming.referenceSource === 'asset-hub' ? 3 : incoming.referenceSource === 'unknown' ? 2 : 1
+
+  return {
+    assetId: incoming.assetId || existing.assetId,
+    name: incoming.name || existing.name,
+    aliases: uniqueNames([...existing.aliases, ...incoming.aliases]),
+    prompt: incoming.prompt || existing.prompt,
+    imageUrl: existing.imageUrl || incoming.imageUrl,
+    appearance: incoming.appearance || existing.appearance,
+    primaryIdentifier: incoming.primaryIdentifier || existing.primaryIdentifier,
+    visualKeywords: uniqueNames([...existing.visualKeywords, ...incoming.visualKeywords]),
+    selectedAppearanceId: incoming.selectedAppearanceId || existing.selectedAppearanceId,
+    expectedAppearances: incoming.expectedAppearances.length > 0
+      ? incoming.expectedAppearances
+      : existing.expectedAppearances,
+    referenceSource: incomingSourceWeight >= existingSourceWeight ? incoming.referenceSource : existing.referenceSource,
+  }
+}
+
+function buildCharacterAppearanceLockTokens(seed: StoryboardCharacterReferenceSeed): string[] {
+  const expectedAppearanceTokens = seed.expectedAppearances.flatMap((appearance) => [
+    appearance.changeReason,
+    appearance.description,
+    appearance.id,
+  ])
+  return uniqueNames([
+    seed.name,
+    seed.appearance,
+    seed.primaryIdentifier,
+    ...seed.visualKeywords,
+    seed.selectedAppearanceId,
+    ...expectedAppearanceTokens,
+  ])
+}
+
 export function extractCharacterReferenceSeeds(raw: unknown): StoryboardCharacterReferenceSeed[] {
   const records = Array.isArray(raw)
     ? toObjectArray(raw)
@@ -229,19 +466,33 @@ export function extractCharacterReferenceSeeds(raw: unknown): StoryboardCharacte
 
     const aliases = uniqueNames(readStringArray(record.aliases))
     const assetId = readAssetId(record)
+    const imageUrl = readReferenceImageUrl(record)
+    const expectedAppearances = readCharacterExpectedAppearances(record.expected_appearances)
     const key = normalizeMatchKey(assetId || name)
     const nextSeed: StoryboardCharacterReferenceSeed = {
       assetId,
       name,
       aliases,
       prompt: buildCharacterReferencePrompt(record),
-      imageUrl: readReferenceImageUrl(record),
+      imageUrl,
+      appearance: readString(record.appearance) || readString(record.introduction),
+      primaryIdentifier: readString(record.primary_identifier),
+      visualKeywords: readStringArray(record.visual_keywords),
+      selectedAppearanceId: readFirstNonEmptyString([
+        record.selectedAppearanceId,
+        record.selected_appearance_id,
+      ]),
+      expectedAppearances,
+      referenceSource: inferCharacterReferenceSource(record, imageUrl),
     }
     const existingSeed = deduped.get(key)
 
-    if (!existingSeed || (!existingSeed.imageUrl && nextSeed.imageUrl)) {
+    if (!existingSeed) {
       deduped.set(key, nextSeed)
+      continue
     }
+
+    deduped.set(key, mergeCharacterReferenceSeeds(existingSeed, nextSeed))
   }
 
   return Array.from(deduped.values())
@@ -309,6 +560,7 @@ export function extractStoryboardPanelsFromOutputs(
         videoPrompt,
         characters: characterRefs.names,
         characterAssetIds,
+        characterContinuity: characterRefs.continuity,
         location,
         locationAssetId,
       }
@@ -360,15 +612,42 @@ function buildGroupNode(params: {
   }
 }
 
-function registerReferenceNodeIds(
-  registry: Map<string, string>,
-  names: string[],
-  nodeId: string,
+function registerCharacterContinuityProfile(
+  registry: Map<string, StoryboardCharacterContinuityProfile>,
+  character: StoryboardCharacterReferenceSeed,
+  referenceNodeId: string,
 ) {
-  for (const name of names) {
-    const key = normalizeMatchKey(name)
-    if (!key || registry.has(key)) continue
-    registry.set(key, nodeId)
+  const profile: StoryboardCharacterContinuityProfile = {
+    referenceNodeId,
+    name: character.name,
+    assetId: character.assetId,
+    aliases: character.aliases,
+    appearanceLockTokens: buildCharacterAppearanceLockTokens(character),
+    referenceSource: character.referenceSource,
+  }
+
+  for (const key of [character.assetId, character.name, ...character.aliases]) {
+    const normalized = normalizeMatchKey(key)
+    if (!normalized || registry.has(normalized)) continue
+    registry.set(normalized, profile)
+  }
+}
+
+function registerSceneContinuityProfile(
+  registry: Map<string, StoryboardLocationContinuityProfile>,
+  scene: StoryboardSceneReferenceSeed,
+  referenceNodeId: string,
+) {
+  const profile: StoryboardLocationContinuityProfile = {
+    referenceNodeId,
+    name: scene.name,
+    assetId: scene.assetId,
+    referenceSource: scene.imageUrl ? 'asset-hub' : 'generated-reference',
+  }
+  for (const key of [scene.assetId, scene.name]) {
+    const normalized = normalizeMatchKey(key)
+    if (!normalized || registry.has(normalized)) continue
+    registry.set(normalized, profile)
   }
 }
 
@@ -407,8 +686,8 @@ export function buildStoryboardPanelGraph(params: {
   ]
   const edges: Edge[] = []
   const preloadedOutputs: Record<string, Record<string, unknown>> = {}
-  const characterReferenceNodeIds = new Map<string, string>()
-  const sceneReferenceNodeIds = new Map<string, string>()
+  const characterContinuityProfiles = new Map<string, StoryboardCharacterContinuityProfile>()
+  const sceneContinuityProfiles = new Map<string, StoryboardLocationContinuityProfile>()
   const derivedMeta = {
     derivedFromStoryboard: params.storyboardNodeId,
     materializedStoryboard: true,
@@ -472,7 +751,7 @@ export function buildStoryboardPanelGraph(params: {
           nodeType: 'image-generate',
           label: `${character.name} Ref Image`,
           config: {
-            provider: 'flux',
+            provider: 'google',
             model: '',
             artStyle,
             customPrompt: '',
@@ -497,11 +776,7 @@ export function buildStoryboardPanelGraph(params: {
       })
     }
 
-    registerReferenceNodeIds(
-      characterReferenceNodeIds,
-      [character.assetId, character.name, ...character.aliases],
-      imageNodeId,
-    )
+    registerCharacterContinuityProfile(characterContinuityProfiles, character, imageNodeId)
     referenceY += 150
   }
 
@@ -566,7 +841,7 @@ export function buildStoryboardPanelGraph(params: {
           nodeType: 'image-generate',
           label: `${scene.name} Scene Image`,
           config: {
-            provider: 'flux',
+            provider: 'google',
             model: '',
             artStyle,
             customPrompt: '',
@@ -591,14 +866,14 @@ export function buildStoryboardPanelGraph(params: {
       })
     }
 
-    registerReferenceNodeIds(sceneReferenceNodeIds, [scene.name], imageNodeId)
-    if (scene.assetId) {
-      registerReferenceNodeIds(sceneReferenceNodeIds, [scene.assetId], imageNodeId)
-    }
+    registerSceneContinuityProfile(sceneContinuityProfiles, scene, imageNodeId)
     referenceY += 150
   }
 
   let localY = 30
+  let previousPanelImageNodeId: string | null = null
+  let previousPanelIndex: number | null = null
+  let previousPanelNumber: number | null = null
   for (const panel of params.panels) {
     const suffix = `panel_${panel.panelIndex + 1}`
     const imagePromptNodeId = `${params.storyboardNodeId}__${suffix}__image_prompt`
@@ -607,6 +882,67 @@ export function buildStoryboardPanelGraph(params: {
     const videoNodeId = `${params.storyboardNodeId}__${suffix}__video`
     const panelLabel = panel.panelNumber ?? panel.panelIndex + 1
     const panelDerivedMeta = { ...derivedMeta, materializedPanelIndex: panel.panelIndex }
+
+    const panelCharacterContinuityLookup = new Map<string, StoryboardPanelCharacterContinuitySeed>()
+    for (const panelCharacter of panel.characterContinuity) {
+      const keys = [panelCharacter.assetId, panelCharacter.name]
+      for (const key of keys) {
+        const normalized = normalizeMatchKey(key)
+        if (!normalized || panelCharacterContinuityLookup.has(normalized)) continue
+        panelCharacterContinuityLookup.set(normalized, panelCharacter)
+      }
+    }
+
+    const characterBindingsByNodeId = new Map<string, StoryboardPanelContinuityCharacterBinding>()
+    const registerCharacterBinding = (lookupKey: string) => {
+      const normalized = normalizeMatchKey(lookupKey)
+      if (!normalized) return
+      const profile = characterContinuityProfiles.get(normalized)
+      if (!profile) return
+      const panelCharacter = panelCharacterContinuityLookup.get(normalized)
+      const existing = characterBindingsByNodeId.get(profile.referenceNodeId)
+      const mergedPanelHints = uniqueNames([
+        ...(existing?.panelAppearanceHints || []),
+        panelCharacter?.appearanceHint || '',
+      ])
+      const mergedIdentityTokens = uniqueNames([
+        ...(existing?.identityTokens || []),
+        ...(panelCharacter?.identityHints || []),
+      ])
+      characterBindingsByNodeId.set(profile.referenceNodeId, {
+        referenceNodeId: profile.referenceNodeId,
+        characterName: profile.name,
+        characterAssetId: profile.assetId,
+        appearanceLockTokens: profile.appearanceLockTokens,
+        panelAppearanceHints: mergedPanelHints,
+        identityTokens: mergedIdentityTokens,
+        referenceSource: profile.referenceSource,
+      })
+    }
+
+    for (const characterAssetId of panel.characterAssetIds) {
+      registerCharacterBinding(characterAssetId)
+    }
+    for (const panelCharacter of panel.characterContinuity) {
+      registerCharacterBinding(panelCharacter.assetId)
+      registerCharacterBinding(panelCharacter.name)
+    }
+    for (const characterName of panel.characters) {
+      registerCharacterBinding(characterName)
+    }
+    const characterBindings = Array.from(characterBindingsByNodeId.values())
+
+    const locationLookupKey = panel.locationAssetId || panel.location
+    const locationContinuityProfile = locationLookupKey
+      ? sceneContinuityProfiles.get(normalizeMatchKey(locationLookupKey)) || null
+      : null
+    const locationReferenceNodeId = locationContinuityProfile?.referenceNodeId || null
+
+    const appearanceLockTokens = uniqueNames([
+      ...characterBindings.flatMap((binding) => binding.appearanceLockTokens),
+      ...characterBindings.flatMap((binding) => binding.panelAppearanceHints),
+      ...characterBindings.flatMap((binding) => binding.identityTokens),
+    ])
 
     nodes.push({
       id: imagePromptNodeId,
@@ -646,13 +982,54 @@ export function buildStoryboardPanelGraph(params: {
         nodeType: 'image-generate',
         label: `Panel ${panelLabel} Image`,
         config: {
-          provider: 'flux',
+          provider: 'google',
           model: '',
           artStyle,
           customPrompt: '',
           negativePrompt: '',
           aspectRatio: '16:9',
           resolution: '2K',
+        },
+        continuityChain: {
+          enabled: previousPanelImageNodeId !== null,
+          source: previousPanelImageNodeId ? 'previous-panel-image' : 'none',
+          previousPanelImageNodeId,
+          previousPanelIndex,
+          previousPanelNumber,
+        },
+        continuityState: {
+          panelIndex: panel.panelIndex,
+          panelNumber: panelLabel,
+          sources: {
+            previousPanel: {
+              expected: previousPanelImageNodeId !== null,
+              sourceNodeId: previousPanelImageNodeId,
+              panelIndex: previousPanelIndex,
+              panelNumber: previousPanelNumber,
+            },
+            characterReferences: characterBindings.map((binding) => ({
+              referenceNodeId: binding.referenceNodeId,
+              characterName: binding.characterName,
+              characterAssetId: binding.characterAssetId,
+              referenceSource: binding.referenceSource,
+              appearanceLockTokens: binding.appearanceLockTokens,
+              panelAppearanceHints: binding.panelAppearanceHints,
+              identityTokens: binding.identityTokens,
+            })),
+            locationReference: locationContinuityProfile
+              ? {
+                referenceNodeId: locationContinuityProfile.referenceNodeId,
+                locationName: locationContinuityProfile.name,
+                locationAssetId: locationContinuityProfile.assetId,
+                referenceSource: locationContinuityProfile.referenceSource,
+              }
+              : null,
+          },
+          identity: {
+            characterNames: uniqueNames(characterBindings.map((binding) => binding.characterName)),
+            appearanceLockTokens,
+            hasAppearanceLock: appearanceLockTokens.length > 0,
+          },
         },
         ...panelDerivedMeta,
       },
@@ -708,34 +1085,79 @@ export function buildStoryboardPanelGraph(params: {
       style: { strokeWidth: 2, stroke: '#3b82f6' },
     })
 
-    const referenceNodeIds = new Set<string>()
-    for (const characterAssetId of panel.characterAssetIds) {
-      const matchedByAssetId = characterReferenceNodeIds.get(normalizeMatchKey(characterAssetId))
-      if (matchedByAssetId) referenceNodeIds.add(matchedByAssetId)
-    }
-    for (const characterName of panel.characters) {
-      const matchedNodeId = characterReferenceNodeIds.get(normalizeMatchKey(characterName))
-      if (matchedNodeId) referenceNodeIds.add(matchedNodeId)
-    }
-    const sceneLookupKey = panel.locationAssetId || panel.location
-    if (sceneLookupKey) {
-      const matchedSceneNodeId = sceneReferenceNodeIds.get(normalizeMatchKey(sceneLookupKey))
-      if (matchedSceneNodeId) referenceNodeIds.add(matchedSceneNodeId)
-    }
-
-    for (const referenceNodeId of referenceNodeIds) {
-      const isSceneReference = referenceNodeId.includes('__scene_ref_')
+    if (
+      previousPanelImageNodeId
+      && previousPanelIndex !== null
+      && previousPanelNumber !== null
+    ) {
+      const continuityEdgeData: StoryboardPanelContinuityEdgeData = {
+        continuityKind: 'previous-panel-image',
+        continuitySource: 'materialized-panel-chain',
+        fromPanelIndex: previousPanelIndex,
+        fromPanelNumber: previousPanelNumber,
+        toPanelIndex: panel.panelIndex,
+        toPanelNumber: panelLabel,
+      }
       edges.push({
-        id: `${referenceNodeId}__to__${imageNodeId}__reference`,
-        source: referenceNodeId,
+        id: `${previousPanelImageNodeId}__to__${imageNodeId}__continuity_reference`,
+        source: previousPanelImageNodeId,
         sourceHandle: 'image',
         target: imageNodeId,
         targetHandle: 'reference',
         animated: true,
-        style: { strokeWidth: 2, stroke: isSceneReference ? '#22c55e' : '#8b5cf6' },
+        style: { strokeWidth: 2, stroke: '#f59e0b', strokeDasharray: '5 4' },
+        data: continuityEdgeData,
       })
     }
 
+    for (const binding of characterBindings) {
+      const continuityEdgeData: StoryboardCharacterContinuityEdgeData = {
+        continuityKind: 'character-reference',
+        continuitySource: 'materialized-character-reference',
+        toPanelIndex: panel.panelIndex,
+        toPanelNumber: panelLabel,
+        characterName: binding.characterName,
+        characterAssetId: binding.characterAssetId,
+        appearanceLockTokens: binding.appearanceLockTokens,
+        panelAppearanceHints: binding.panelAppearanceHints,
+        identityTokens: binding.identityTokens,
+      }
+      edges.push({
+        id: `${binding.referenceNodeId}__to__${imageNodeId}__character_reference`,
+        source: binding.referenceNodeId,
+        sourceHandle: 'image',
+        target: imageNodeId,
+        targetHandle: 'reference',
+        animated: true,
+        style: { strokeWidth: 2, stroke: '#8b5cf6' },
+        data: continuityEdgeData,
+      })
+    }
+
+    if (locationReferenceNodeId && locationContinuityProfile) {
+      const continuityEdgeData: StoryboardLocationContinuityEdgeData = {
+        continuityKind: 'location-reference',
+        continuitySource: 'materialized-location-reference',
+        toPanelIndex: panel.panelIndex,
+        toPanelNumber: panelLabel,
+        locationName: locationContinuityProfile.name,
+        locationAssetId: locationContinuityProfile.assetId,
+      }
+      edges.push({
+        id: `${locationReferenceNodeId}__to__${imageNodeId}__location_reference`,
+        source: locationReferenceNodeId,
+        sourceHandle: 'image',
+        target: imageNodeId,
+        targetHandle: 'reference',
+        animated: true,
+        style: { strokeWidth: 2, stroke: '#22c55e' },
+        data: continuityEdgeData,
+      })
+    }
+
+    previousPanelImageNodeId = imageNodeId
+    previousPanelIndex = panel.panelIndex
+    previousPanelNumber = panelLabel
     localY += 250
   }
 

@@ -3,6 +3,7 @@ import { getCompletionParts } from '@/lib/llm/completion-parts'
 import { getPromptTemplate, PROMPT_IDS } from '@/lib/prompt-i18n'
 import {
   runScriptToStoryboardOrchestrator,
+  type ClipStoryboardPanels,
   type ScriptToStoryboardStepMeta,
   type ScriptToStoryboardStepOutput,
 } from '@/lib/novel-promotion/script-to-storyboard/orchestrator'
@@ -12,6 +13,17 @@ import {
   resolveWorkflowArtStylePrompt,
 } from '../art-style'
 import type { NodeExecutor } from './types'
+
+const MIN_TARGET_PANEL_COUNT = 1
+const MAX_TARGET_PANEL_COUNT = 60
+
+type PanelCountStatus = 'exact' | 'trimmed' | 'under-target'
+
+interface PanelNormalizationResult {
+  panels: ClipStoryboardPanels['finalPanels']
+  status: PanelCountStatus
+  warning: string | null
+}
 
 /**
  * Storyboard Generator executor — PRODUCTION BRIDGE.
@@ -80,6 +92,7 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
     ? ctx.config.temperature
     : undefined
   const reasoning = ctx.config.reasoning !== false
+  const targetPanelCount = resolveTargetPanelCount(ctx.config.panelCount)
 
   // ── Adapt workflow inputs to orchestrator's CharacterAsset[] / LocationAsset[] ──
   const characters = adaptCharacters(ctx.inputs.characters)
@@ -142,14 +155,17 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
     novelPromotionData: { characters, locations },
     promptTemplates,
     styleDirective,
+    targetPanelCount: targetPanelCount ?? undefined,
     runStep,
   })
 
   // ── Transform orchestrator output into workflow output contract ──
   const allPanels = result.clipPanels.flatMap(cp => cp.finalPanels)
-  const panels = allPanels.map((panel, index) => ({
+  const normalizedPanels = normalizePanelsToTarget(allPanels, targetPanelCount)
+  const panels = normalizedPanels.panels.map((panel, index) => ({
     panelIndex: index,
-    panel_number: panel.panel_number,
+    panel_number: index + 1,
+    source_panel_number: panel.panel_number,
     description: panel.description || '',
     location: panel.location || '',
     source_text: panel.source_text || '',
@@ -170,11 +186,19 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
   return {
     outputs: {
       panels,
-      summary: `Generated ${panels.length} storyboard panels (4-phase orchestrator)`,
+      summary: buildSummary({
+        finalPanelCount: panels.length,
+        requestedPanelCount: targetPanelCount,
+        status: normalizedPanels.status,
+      }),
     },
     metadata: {
       model,
       panelCount: panels.length,
+      requestedPanelCount: targetPanelCount,
+      generatedPanelCount: allPanels.length,
+      panelCountStatus: normalizedPanels.status,
+      panelCountWarning: normalizedPanels.warning,
       clipCount: result.summary.clipCount,
       totalStepCount: result.summary.totalStepCount,
       reasoning,
@@ -183,6 +207,108 @@ export const executeStoryboard: NodeExecutor = async (ctx) => {
       artStylePrompt,
     },
   }
+}
+
+function resolveTargetPanelCount(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null
+  }
+  if (typeof raw === 'string' && raw.trim().length === 0) {
+    return null
+  }
+  const parsed = typeof raw === 'number'
+    ? raw
+    : (typeof raw === 'string' ? Number(raw) : NaN)
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Target Panel Count must be a valid number.')
+  }
+  const integer = Math.round(parsed)
+  if (integer < MIN_TARGET_PANEL_COUNT || integer > MAX_TARGET_PANEL_COUNT) {
+    throw new Error(`Target Panel Count must be between ${MIN_TARGET_PANEL_COUNT} and ${MAX_TARGET_PANEL_COUNT}.`)
+  }
+  return integer
+}
+
+function normalizePanelsToTarget(
+  panels: ClipStoryboardPanels['finalPanels'],
+  targetPanelCount: number | null,
+): PanelNormalizationResult {
+  if (targetPanelCount === null) {
+    return { panels, status: 'exact', warning: null }
+  }
+
+  if (panels.length === targetPanelCount) {
+    return { panels, status: 'exact', warning: null }
+  }
+
+  if (panels.length > targetPanelCount) {
+    const selectedIndices = selectPanelIndices({
+      totalPanels: panels.length,
+      targetPanels: targetPanelCount,
+    })
+    return {
+      panels: selectedIndices.map((index) => panels[index]),
+      status: 'trimmed',
+      warning: null,
+    }
+  }
+
+  return {
+    panels,
+    status: 'under-target',
+    warning: `Storyboard generated ${panels.length} panels, lower than requested target ${targetPanelCount}.`,
+  }
+}
+
+function selectPanelIndices(params: { totalPanels: number; targetPanels: number }): number[] {
+  const { totalPanels, targetPanels } = params
+  if (targetPanels >= totalPanels) {
+    return Array.from({ length: totalPanels }, (_, index) => index)
+  }
+  if (targetPanels <= 1) {
+    return [0]
+  }
+
+  const lastIndex = totalPanels - 1
+  const indices: number[] = []
+  let previous = -1
+
+  for (let i = 0; i < targetPanels; i += 1) {
+    const ratio = (i * lastIndex) / (targetPanels - 1)
+    let candidate = Math.round(ratio)
+    const remainingSlots = targetPanels - i - 1
+    const maxAllowed = lastIndex - remainingSlots
+
+    if (candidate <= previous) {
+      candidate = previous + 1
+    }
+    if (candidate > maxAllowed) {
+      candidate = maxAllowed
+    }
+
+    indices.push(candidate)
+    previous = candidate
+  }
+
+  return indices
+}
+
+function buildSummary(params: {
+  finalPanelCount: number
+  requestedPanelCount: number | null
+  status: PanelCountStatus
+}): string {
+  const { finalPanelCount, requestedPanelCount, status } = params
+  if (requestedPanelCount === null) {
+    return `Generated ${finalPanelCount} storyboard panels (4-phase orchestrator)`
+  }
+  if (status === 'trimmed') {
+    return `Generated ${finalPanelCount} storyboard panels (trimmed to target ${requestedPanelCount})`
+  }
+  if (status === 'under-target') {
+    return `Generated ${finalPanelCount} storyboard panels (below requested target ${requestedPanelCount})`
+  }
+  return `Generated ${finalPanelCount} storyboard panels (4-phase orchestrator)`
 }
 
 // ── Input adapters ──

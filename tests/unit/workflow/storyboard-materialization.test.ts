@@ -42,6 +42,15 @@ describe('storyboard materialization helpers', () => {
         videoPrompt: 'Slow dolly forward through the alley',
         characters: ['Hero'],
         characterAssetIds: [],
+        characterContinuity: [
+          {
+            name: 'Hero',
+            assetId: '',
+            appearanceHint: '',
+            appearanceId: '',
+            identityHints: [],
+          },
+        ],
         location: 'Neon Alley',
         locationAssetId: '',
       },
@@ -54,10 +63,70 @@ describe('storyboard materialization helpers', () => {
         videoPrompt: 'Close-up on the hero',
         characters: ['Hero', 'Shadow'],
         characterAssetIds: [],
+        characterContinuity: [
+          {
+            name: 'Hero',
+            assetId: '',
+            appearanceHint: '',
+            appearanceId: '',
+            identityHints: [],
+          },
+          {
+            name: 'Shadow',
+            assetId: '',
+            appearanceHint: '',
+            appearanceId: '',
+            identityHints: [],
+          },
+        ],
         location: 'Neon Alley',
         locationAssetId: '',
       },
     ])
+  })
+
+  it('extracts panel-level character continuity hints for appearance locking', () => {
+    const panels = extractStoryboardPanelsFromOutputs({
+      panels: [
+        {
+          panel_number: 1,
+          description: 'Queen confronts the nobles',
+          characters: [
+            {
+              name: 'Clara Queen',
+              assetId: 'char-queen',
+              appearance: 'deep blue royal gown',
+              primary_identifier: 'silver crown',
+              visual_keywords: ['queenly', 'stern gaze'],
+              expected_appearances: [
+                {
+                  id: 'look-1',
+                  change_reason: 'court look',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(panels).toHaveLength(1)
+    expect(panels[0]).toEqual(expect.objectContaining({
+      characterAssetIds: ['char-queen'],
+      characterContinuity: [
+        expect.objectContaining({
+          name: 'Clara Queen',
+          assetId: 'char-queen',
+          appearanceHint: 'deep blue royal gown',
+          identityHints: expect.arrayContaining([
+            'silver crown',
+            'queenly',
+            'stern gaze',
+            'court look',
+          ]),
+        }),
+      ],
+    }))
   })
 
   it('extracts character and scene reference seeds from upstream workflow outputs', () => {
@@ -114,6 +183,12 @@ describe('storyboard materialization helpers', () => {
           aliases: ['Jaeger'],
           prompt: 'Eren reference prompt',
           imageUrl: null,
+          appearance: 'Short brown hair, green eyes, scout jacket',
+          primaryIdentifier: '',
+          visualKeywords: [],
+          selectedAppearanceId: '',
+          expectedAppearances: [],
+          referenceSource: 'generated-reference',
         },
       ],
       sceneReferences: [
@@ -135,6 +210,15 @@ describe('storyboard materialization helpers', () => {
           videoPrompt: 'Video prompt 1',
           characters: ['Eren'],
           characterAssetIds: [],
+          characterContinuity: [
+            {
+              name: 'Eren',
+              assetId: '',
+              appearanceHint: '',
+              appearanceId: '',
+              identityHints: [],
+            },
+          ],
           location: 'Shiganshina Gate',
           locationAssetId: '',
         },
@@ -147,6 +231,7 @@ describe('storyboard materialization helpers', () => {
           videoPrompt: 'Video prompt 2',
           characters: [],
           characterAssetIds: [],
+          characterContinuity: [],
           location: '',
           locationAssetId: '',
         },
@@ -155,7 +240,7 @@ describe('storyboard materialization helpers', () => {
 
     expect(graph.groupId).toBe('storyboard_1__panels_group')
     expect(graph.nodes).toHaveLength(13)
-    expect(graph.edges).toHaveLength(10)
+    expect(graph.edges).toHaveLength(11)
 
     const groupNode = graph.nodes.find((node) => node.id === graph.groupId)
     expect(groupNode?.type).toBe('workflowGroup')
@@ -178,6 +263,7 @@ describe('storyboard materialization helpers', () => {
       label: 'Eren Ref Image',
       materializedReferenceType: 'character',
       config: expect.objectContaining({
+        provider: 'google',
         artStyle: 'realistic',
       }),
     }))
@@ -188,6 +274,7 @@ describe('storyboard materialization helpers', () => {
       label: 'Shiganshina Gate Scene Image',
       materializedReferenceType: 'scene',
       config: expect.objectContaining({
+        provider: 'google',
         artStyle: 'realistic',
       }),
     }))
@@ -198,6 +285,44 @@ describe('storyboard materialization helpers', () => {
       materializedPanelIndex: 1,
       config: expect.objectContaining({
         artStyle: 'realistic',
+      }),
+    }))
+
+    const panel1ImageNode = graph.nodes.find((node) => node.id === 'storyboard_1__panel_1__image')
+    const panel2ImageNode = graph.nodes.find((node) => node.id === 'storyboard_1__panel_2__image')
+    expect(panel1ImageNode?.data).toEqual(expect.objectContaining({
+      config: expect.objectContaining({
+        provider: 'google',
+      }),
+      continuityChain: expect.objectContaining({
+        enabled: false,
+        source: 'none',
+      }),
+      continuityState: expect.objectContaining({
+        panelIndex: 0,
+        panelNumber: 1,
+        sources: expect.objectContaining({
+          characterReferences: expect.arrayContaining([
+            expect.objectContaining({
+              characterName: 'Eren',
+            }),
+          ]),
+          locationReference: expect.objectContaining({
+            locationName: 'Shiganshina Gate',
+          }),
+        }),
+        identity: expect.objectContaining({
+          hasAppearanceLock: true,
+        }),
+      }),
+    }))
+    expect(panel2ImageNode?.data).toEqual(expect.objectContaining({
+      continuityChain: expect.objectContaining({
+        enabled: true,
+        source: 'previous-panel-image',
+        previousPanelImageNodeId: 'storyboard_1__panel_1__image',
+        previousPanelIndex: 0,
+        previousPanelNumber: 1,
       }),
     }))
 
@@ -216,11 +341,34 @@ describe('storyboard materialization helpers', () => {
         source: 'storyboard_1__character_ref_1__image',
         target: 'storyboard_1__panel_1__image',
         targetHandle: 'reference',
+        data: expect.objectContaining({
+          continuityKind: 'character-reference',
+          continuitySource: 'materialized-character-reference',
+          characterName: 'Eren',
+        }),
       }),
       expect.objectContaining({
         source: 'storyboard_1__scene_ref_1__image',
         target: 'storyboard_1__panel_1__image',
         targetHandle: 'reference',
+        data: expect.objectContaining({
+          continuityKind: 'location-reference',
+          continuitySource: 'materialized-location-reference',
+          locationName: 'Shiganshina Gate',
+        }),
+      }),
+      expect.objectContaining({
+        source: 'storyboard_1__panel_1__image',
+        target: 'storyboard_1__panel_2__image',
+        targetHandle: 'reference',
+        data: expect.objectContaining({
+          continuityKind: 'previous-panel-image',
+          continuitySource: 'materialized-panel-chain',
+          fromPanelIndex: 0,
+          fromPanelNumber: 1,
+          toPanelIndex: 1,
+          toPanelNumber: 2,
+        }),
       }),
     ]))
     expect(graph.preloadedOutputs).toEqual({})
@@ -238,6 +386,12 @@ describe('storyboard materialization helpers', () => {
           aliases: ['Empress Elara'],
           prompt: 'Unused because asset ref should win',
           imageUrl: '/m/queen-elara.png',
+          appearance: 'deep blue royal gown',
+          primaryIdentifier: 'silver crown',
+          visualKeywords: ['queen'],
+          selectedAppearanceId: 'look-1',
+          expectedAppearances: [],
+          referenceSource: 'asset-hub',
         },
       ],
       sceneReferences: [
@@ -258,6 +412,15 @@ describe('storyboard materialization helpers', () => {
           videoPrompt: 'A slow push-in over the table',
           characters: ['Queen Elara'],
           characterAssetIds: ['char-queen'],
+          characterContinuity: [
+            {
+              name: 'Queen Elara',
+              assetId: 'char-queen',
+              appearanceHint: '',
+              appearanceId: '',
+              identityHints: [],
+            },
+          ],
           location: 'Secret Backroom',
           locationAssetId: 'scene-backroom',
         },
@@ -317,6 +480,12 @@ describe('storyboard materialization helpers', () => {
           aliases: ['Empress Elara'],
           prompt: 'Reference prompt',
           imageUrl: '/m/queen-ref.png',
+          appearance: 'deep blue royal gown',
+          primaryIdentifier: 'silver crown',
+          visualKeywords: ['queen'],
+          selectedAppearanceId: 'look-1',
+          expectedAppearances: [],
+          referenceSource: 'asset-hub',
         },
       ],
       sceneReferences: [
@@ -337,6 +506,15 @@ describe('storyboard materialization helpers', () => {
           videoPrompt: 'Video prompt 1',
           characters: ['Queen Elara'],
           characterAssetIds: ['char-queen'],
+          characterContinuity: [
+            {
+              name: 'Queen Elara',
+              assetId: 'char-queen',
+              appearanceHint: '',
+              appearanceId: '',
+              identityHints: [],
+            },
+          ],
           location: 'War Room',
           locationAssetId: 'scene-backroom',
         },

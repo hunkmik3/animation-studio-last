@@ -273,6 +273,7 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
     configFields: [
         {
             key: 'provider', label: 'Provider', type: 'select', options: [
+                { label: 'Google AI Studio', value: 'google' },
                 { label: 'Flux', value: 'flux' },
                 { label: 'Stable Diffusion', value: 'sd' },
                 { label: 'Seedream', value: 'seedream' },
@@ -304,7 +305,7 @@ const IMAGE_GENERATE_NODE: WorkflowNodeTypeDefinition = {
         },
     ],
     defaultConfig: {
-        provider: 'flux',
+        provider: 'google',
         model: '',
         artStyle: 'japanese-anime',
         candidateCount: 1,

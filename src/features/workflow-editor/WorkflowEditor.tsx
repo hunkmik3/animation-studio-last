@@ -403,6 +403,7 @@ function WorkflowEditorInner() {
                         Boolean(execData.outputData)
                         || Boolean(execData.nodeStates)
                         || Boolean(execData.continuation)
+                        || Boolean(execData.continuityMemory)
                     )
                 ) {
                     hydrateFromExecution(execData)

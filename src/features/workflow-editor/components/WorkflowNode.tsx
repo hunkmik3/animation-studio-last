@@ -245,7 +245,7 @@ function WorkflowNodeComponent({ id, data, selected }: NodeProps) {
 
                     {nodeType === 'image-generate' && (
                         <div className="mt-1 p-1.5 rounded bg-slate-800/50 text-[9px] text-slate-400 flex flex-col gap-0.5 max-w-[180px]">
-                            <span className="truncate text-blue-300">Provider: {String(nodeData.config?.provider || 'flux')}</span>
+                            <span className="truncate text-blue-300">Provider: {String(nodeData.config?.provider || 'google')}</span>
                             {nodeData.config?.model && <span className="truncate">Model: {String(nodeData.config.model)}</span>}
                             <div className="flex justify-between items-center text-slate-500 mt-0.5">
                                 <span>{String(nodeData.config?.aspectRatio || '16:9')}</span>

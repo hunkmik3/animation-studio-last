@@ -182,7 +182,7 @@ const nodeExecutors: Record<string, NodeExecutor> = {
 
     'image-generate': async (ctx) => {
         const prompt = (ctx.inputs.prompt as string) || ''
-        const provider = (ctx.config.provider as string) || 'flux'
+        const provider = (ctx.config.provider as string) || 'google'
         return {
             outputs: {
                 image: `[Image placeholder] Provider: ${provider}, Prompt: ${prompt.slice(0, 100)}`,

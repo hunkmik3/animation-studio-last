@@ -60,6 +60,12 @@ function resetStoreState() {
     continuationInFlightKey: null,
     currentExecutionId: null,
     persistedOutputs: null,
+    continuityMemory: {
+      version: 1,
+      updatedAt: '2026-04-01T00:00:00.000Z',
+      characters: {},
+      locations: {},
+    },
     meta: {
       id: 'workflow_test',
       projectId: null,
@@ -319,6 +325,45 @@ describe('workflow async continuation', () => {
 
     expect(useWorkflowStore.getState().recoverableContinuation).toBeNull()
     expect(useWorkflowStore.getState().continuationRecovery.status).toBe('stale')
+  })
+
+  it('hydrates workflow-scoped continuity memory from persisted execution payload', () => {
+    useWorkflowStore.getState().hydrateFromExecution({
+      executionId: 'exec_memory_1',
+      outputData: null,
+      nodeStates: null,
+      continuation: null,
+      cursor: null,
+      lease: null,
+      continuityMemory: {
+        version: 1,
+        updatedAt: '2026-04-01T12:00:00.000Z',
+        characters: {
+          'name:clara queen': {
+            canonicalName: 'Clara Queen',
+            characterAssetId: '',
+            identityTokens: ['queen'],
+            appearanceLockTokens: ['deep blue royal gown'],
+            preferredReferenceImage: '/m/clara-ref',
+            latestGoodImage: '/m/clara-panel-2',
+            sourceNodeId: 'panel_2_image',
+            sourcePanelId: 'panel_2_image',
+            sourcePanelIndex: 1,
+            sourcePanelNumber: 2,
+            continuityStrength: 'strong',
+            continuitySourceKinds: ['character-reference'],
+            updatedAt: '2026-04-01T12:00:00.000Z',
+          },
+        },
+        locations: {},
+      },
+    })
+
+    const continuityMemory = useWorkflowStore.getState().continuityMemory
+    expect(continuityMemory.characters['name:clara queen']).toEqual(expect.objectContaining({
+      canonicalName: 'Clara Queen',
+      latestGoodImage: '/m/clara-panel-2',
+    }))
   })
 
   it('resumes a valid recoverable continuation exactly once even with duplicate trigger', async () => {

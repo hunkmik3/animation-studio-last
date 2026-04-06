@@ -16,6 +16,11 @@ import {
     refreshWorkflowExecutionLease,
     type WorkflowExecutionCursor,
 } from '@/lib/workflow-engine/execution-authority'
+import {
+    WORKFLOW_CONTINUITY_MEMORY_STATE_KEY,
+    isWorkflowContinuityMemory,
+    type WorkflowContinuityMemory,
+} from '@/lib/workflow-engine/continuity-memory'
 
 type Params = { params: Promise<{ workflowId: string }> }
 
@@ -55,16 +60,18 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
         status?: string
         continuation?: WorkflowContinuationMarker | null
         cursor?: WorkflowExecutionCursor | null
+        continuityMemory?: WorkflowContinuityMemory | null
         leaseId?: string
     }
-    const { executionId, nodeId, outputs, configSnapshot, nodeState, status, continuation, cursor, leaseId } = body
+    const { executionId, nodeId, outputs, configSnapshot, nodeState, status, continuation, cursor, continuityMemory, leaseId } = body
     const hasContinuationPatch = Object.prototype.hasOwnProperty.call(body, 'continuation')
     const hasCursorPatch = Object.prototype.hasOwnProperty.call(body, 'cursor')
+    const hasContinuityMemoryPatch = Object.prototype.hasOwnProperty.call(body, 'continuityMemory')
     const normalizedLeaseId = typeof leaseId === 'string' && leaseId.trim().length > 0 ? leaseId.trim() : null
 
-    if (!nodeId && !status && !hasContinuationPatch && !hasCursorPatch) {
+    if (!nodeId && !status && !hasContinuationPatch && !hasCursorPatch && !hasContinuityMemoryPatch) {
         throw new ApiError('INVALID_PARAMS', {
-            message: 'nodeId, status, continuation patch, or cursor patch is required',
+            message: 'nodeId, status, continuation patch, cursor patch, or continuity memory patch is required',
         })
     }
 
@@ -112,7 +119,13 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
         : null
     const leaseIsActive = currentLease ? !isWorkflowExecutionLeaseExpired(currentLease, now) : false
     const leaseMismatch = Boolean(leaseIsActive && currentLease && normalizedLeaseId !== currentLease.leaseId)
-    const shouldValidateLease = Boolean((nodeId && (outputs || nodeState)) || status || hasContinuationPatch || hasCursorPatch)
+    const shouldValidateLease = Boolean(
+        (nodeId && (outputs || nodeState))
+        || status
+        || hasContinuationPatch
+        || hasCursorPatch
+        || hasContinuityMemoryPatch,
+    )
     if (shouldValidateLease && leaseMismatch) {
         throw new ApiError('CONFLICT', {
             message: 'Execution lease is held by another session',
@@ -133,7 +146,14 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
     }
 
     // Merge node state / continuation marker into nodeStates
-    if ((nodeId && nodeState) || hasContinuationPatch || hasCursorPatch || status === 'completed' || status === 'failed') {
+    if (
+        (nodeId && nodeState)
+        || hasContinuationPatch
+        || hasCursorPatch
+        || hasContinuityMemoryPatch
+        || status === 'completed'
+        || status === 'failed'
+    ) {
         if (nodeId && nodeState) {
             existingNodeStates[nodeId] = nodeState
         }
@@ -155,6 +175,16 @@ export const POST = apiHandler(async (request: NextRequest, context: Params) => 
                 existingNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY] = cursor
             } else {
                 throw new ApiError('INVALID_PARAMS', { message: 'Invalid execution cursor payload' })
+            }
+        }
+
+        if (hasContinuityMemoryPatch) {
+            if (continuityMemory === null) {
+                delete existingNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY]
+            } else if (isWorkflowContinuityMemory(continuityMemory)) {
+                existingNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY] = continuityMemory
+            } else {
+                throw new ApiError('INVALID_PARAMS', { message: 'Invalid continuity memory payload' })
             }
         }
 
@@ -233,10 +263,14 @@ export const GET = apiHandler(async (_request: NextRequest, context: Params) => 
         const lease = isWorkflowExecutionLease(parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY])
             ? parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
             : null
+        const continuityMemory = isWorkflowContinuityMemory(parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY])
+            ? parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY]
+            : null
         const activeLease = lease && !isWorkflowExecutionLeaseExpired(lease) ? lease : null
         delete parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
         delete parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
         delete parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+        delete parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY]
 
         return NextResponse.json({
             executionId: execution?.id || null,
@@ -246,6 +280,7 @@ export const GET = apiHandler(async (_request: NextRequest, context: Params) => 
             continuation,
             cursor,
             lease: activeLease,
+            continuityMemory,
         })
     }
 
@@ -259,10 +294,14 @@ export const GET = apiHandler(async (_request: NextRequest, context: Params) => 
     const lease = isWorkflowExecutionLease(parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY])
         ? parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
         : null
+    const continuityMemory = isWorkflowContinuityMemory(parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY])
+        ? parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY]
+        : null
     const activeLease = lease && !isWorkflowExecutionLeaseExpired(lease) ? lease : null
     delete parsedNodeStates[WORKFLOW_CONTINUATION_STATE_KEY]
     delete parsedNodeStates[WORKFLOW_EXECUTION_CURSOR_STATE_KEY]
     delete parsedNodeStates[WORKFLOW_EXECUTION_LEASE_STATE_KEY]
+    delete parsedNodeStates[WORKFLOW_CONTINUITY_MEMORY_STATE_KEY]
 
     return NextResponse.json({
         executionId: execution.id,
@@ -272,5 +311,6 @@ export const GET = apiHandler(async (_request: NextRequest, context: Params) => 
         continuation,
         cursor,
         lease: activeLease,
+        continuityMemory,
     })
 })

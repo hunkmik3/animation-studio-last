@@ -233,6 +233,14 @@ export function getProviderKey(providerId?: string): string {
   return colonIndex === -1 ? providerId : providerId.slice(0, colonIndex)
 }
 
+function readProviderApiKeyFromEnv(providerId: string): string {
+  const providerKey = getProviderKey(providerId).toLowerCase()
+  if (providerKey === 'google') {
+    return readTrimmedString(process.env.GOOGLE_API_KEY) || readTrimmedString(process.env.GEMINI_API_KEY)
+  }
+  return ''
+}
+
 /**
  * 统一模型选择解析（严格模式）
  */
@@ -312,16 +320,35 @@ export interface ProviderConfig {
 
 export async function getProviderConfig(userId: string, providerId: string): Promise<ProviderConfig> {
   const { providers } = await readUserConfig(userId)
-  const provider = pickProviderStrict(providers, providerId)
+  const fallbackEnvApiKey = readProviderApiKeyFromEnv(providerId)
+  let provider: CustomProvider | null = null
+  try {
+    provider = pickProviderStrict(providers, providerId)
+  } catch (error) {
+    if (!fallbackEnvApiKey) throw error
+  }
 
-  if (!provider.apiKey) {
+  if (!provider) {
+    return {
+      id: providerId,
+      name: providerId,
+      apiKey: fallbackEnvApiKey,
+    }
+  }
+
+  if (!provider.apiKey && !fallbackEnvApiKey) {
+    throw new Error(`PROVIDER_API_KEY_MISSING: ${provider.id}`)
+  }
+
+  const resolvedApiKey = fallbackEnvApiKey || (provider.apiKey ? decryptApiKey(provider.apiKey) : '')
+  if (!resolvedApiKey) {
     throw new Error(`PROVIDER_API_KEY_MISSING: ${provider.id}`)
   }
 
   return {
     id: provider.id,
     name: provider.name,
-    apiKey: decryptApiKey(provider.apiKey),
+    apiKey: resolvedApiKey,
     baseUrl: normalizeProviderBaseUrl(provider.id, provider.baseUrl),
     apiMode: provider.apiMode,
   }

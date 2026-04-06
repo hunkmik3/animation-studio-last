@@ -20,6 +20,12 @@ import {
   persistStandaloneGeneratedMedia,
   resolveStandaloneGeneratedMediaSource,
 } from './standalone-generation'
+import {
+  getCharacterContinuityMemoryCandidateKeys,
+  getLocationContinuityMemoryCandidateKeys,
+  normalizeWorkflowContinuityMemory,
+  type WorkflowContinuityMemory,
+} from '../continuity-memory'
 
 function readConfigString(config: Record<string, unknown>, key: string): string {
   const raw = config[key]
@@ -40,6 +46,305 @@ function readCandidateCount(config: Record<string, unknown>): number {
   const rawValue = readOptionalNumberConfig(config, 'candidateCount') ?? readOptionalNumberConfig(config, 'count') ?? 1
   const normalized = Math.floor(rawValue)
   return Math.max(1, Math.min(4, normalized))
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    if (seen.has(trimmed)) continue
+    seen.add(trimmed)
+    result.push(trimmed)
+  }
+  return result
+}
+
+function toObjectArray(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is Record<string, unknown> =>
+      typeof item === 'object' && item !== null && !Array.isArray(item),
+    )
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return [value as Record<string, unknown>]
+  }
+  return []
+}
+
+function readStringArrayLoose(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0)
+  }
+  if (typeof value === 'string') {
+    const rawValue = value.trim()
+    if (!rawValue) return []
+    try {
+      return readStringArrayLoose(JSON.parse(rawValue) as unknown)
+    } catch {
+      return [rawValue]
+    }
+  }
+  return []
+}
+
+type ContinuityKind = 'previous-panel-image' | 'character-reference' | 'location-reference'
+
+function readContinuityKind(value: unknown): ContinuityKind | '' {
+  if (value === 'previous-panel-image') return value
+  if (value === 'character-reference') return value
+  if (value === 'location-reference') return value
+  return ''
+}
+
+function readContinuityMetaRecords(
+  inputs: Record<string, unknown>,
+  key: string,
+): Array<Record<string, unknown>> {
+  return toObjectArray(inputs[key])
+}
+
+function readContinuitySourceKinds(records: Array<Record<string, unknown>>): ContinuityKind[] {
+  return records
+    .map((record) => readContinuityKind(record.continuityKind))
+    .filter((kind): kind is ContinuityKind => kind.length > 0)
+}
+
+function readContinuitySourceNodeIds(records: Array<Record<string, unknown>>, kind: ContinuityKind): string[] {
+  return uniqueStrings(
+    records
+      .filter((record) => readContinuityKind(record.continuityKind) === kind)
+      .map((record) => (typeof record.sourceNodeId === 'string' ? record.sourceNodeId.trim() : ''))
+      .filter((value) => value.length > 0),
+  )
+}
+
+function readContinuityCharacterNames(records: Array<Record<string, unknown>>): string[] {
+  return uniqueStrings(
+    records
+      .filter((record) => readContinuityKind(record.continuityKind) === 'character-reference')
+      .map((record) => (typeof record.characterName === 'string' ? record.characterName.trim() : ''))
+      .filter((value) => value.length > 0),
+  )
+}
+
+function readAppearanceLockTokens(records: Array<Record<string, unknown>>): string[] {
+  const tokens = records
+    .filter((record) => readContinuityKind(record.continuityKind) === 'character-reference')
+    .flatMap((record) => [
+      ...readStringArrayLoose(record.appearanceLockTokens),
+      ...readStringArrayLoose(record.panelAppearanceHints),
+      ...readStringArrayLoose(record.identityTokens),
+    ])
+  return uniqueStrings(tokens)
+}
+
+function readContinuityLocationNames(records: Array<Record<string, unknown>>): string[] {
+  return uniqueStrings(
+    records
+      .filter((record) => readContinuityKind(record.continuityKind) === 'location-reference')
+      .map((record) => (typeof record.locationName === 'string' ? record.locationName.trim() : ''))
+      .filter((value) => value.length > 0),
+  )
+}
+
+function readContinuityStateRecord(inputs: Record<string, unknown>): Record<string, unknown> {
+  if (!inputs.continuityState || typeof inputs.continuityState !== 'object' || Array.isArray(inputs.continuityState)) {
+    return {}
+  }
+  return inputs.continuityState as Record<string, unknown>
+}
+
+function readContinuityStateCharacterSources(inputs: Record<string, unknown>): Array<Record<string, unknown>> {
+  const continuityState = readContinuityStateRecord(inputs)
+  const sources = continuityState.sources
+  if (!sources || typeof sources !== 'object' || Array.isArray(sources)) return []
+  return toObjectArray((sources as Record<string, unknown>).characterReferences)
+}
+
+function readContinuityStateLocationSource(inputs: Record<string, unknown>): Record<string, unknown> | null {
+  const continuityState = readContinuityStateRecord(inputs)
+  const sources = continuityState.sources
+  if (!sources || typeof sources !== 'object' || Array.isArray(sources)) return null
+  const locationReference = (sources as Record<string, unknown>).locationReference
+  if (!locationReference || typeof locationReference !== 'object' || Array.isArray(locationReference)) return null
+  return locationReference as Record<string, unknown>
+}
+
+function readContinuityStateCharacterNames(inputs: Record<string, unknown>): string[] {
+  const continuityState = readContinuityStateRecord(inputs)
+  const identity = continuityState.identity
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return []
+  return readStringArrayLoose((identity as Record<string, unknown>).characterNames)
+}
+
+function readContinuityStateAppearanceTokens(inputs: Record<string, unknown>): string[] {
+  const continuityState = readContinuityStateRecord(inputs)
+  const identity = continuityState.identity
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return []
+  return readStringArrayLoose((identity as Record<string, unknown>).appearanceLockTokens)
+}
+
+function readLocationName(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+interface ContinuityMemoryCharacterResolution {
+  preferredReferences: string[]
+  latestReferences: string[]
+  usedKeys: string[]
+  missingKeys: string[]
+  appearanceTokens: string[]
+}
+
+interface ContinuityMemoryLocationResolution {
+  preferredReferences: string[]
+  latestReferences: string[]
+  usedKeys: string[]
+  missingKeys: string[]
+}
+
+function resolveCharacterContinuityMemory(params: {
+  memory: WorkflowContinuityMemory
+  continuityCharacterNames: string[]
+  continuityStateCharacters: Array<Record<string, unknown>>
+}): ContinuityMemoryCharacterResolution {
+  const preferredReferences: string[] = []
+  const latestReferences: string[] = []
+  const usedKeys: string[] = []
+  const missingKeys: string[] = []
+  const appearanceTokens: string[] = []
+
+  const lookupRequests: Array<{ characterAssetId?: string; canonicalName?: string }> = []
+  for (const record of params.continuityStateCharacters) {
+    lookupRequests.push({
+      characterAssetId: typeof record.characterAssetId === 'string' ? record.characterAssetId : '',
+      canonicalName: typeof record.characterName === 'string' ? record.characterName : '',
+    })
+  }
+  for (const characterName of params.continuityCharacterNames) {
+    lookupRequests.push({ canonicalName: characterName })
+  }
+
+  for (const lookupRequest of lookupRequests) {
+    const candidateKeys = getCharacterContinuityMemoryCandidateKeys(lookupRequest)
+    if (candidateKeys.length === 0) continue
+    const key = candidateKeys.find((candidateKey) => params.memory.characters[candidateKey])
+      || candidateKeys[0]
+    if (!key) continue
+    const entry = params.memory.characters[key]
+    if (!entry) {
+      missingKeys.push(key)
+      continue
+    }
+
+    usedKeys.push(key)
+    if (entry.preferredReferenceImage) preferredReferences.push(entry.preferredReferenceImage)
+    if (entry.latestGoodImage) latestReferences.push(entry.latestGoodImage)
+    appearanceTokens.push(...entry.appearanceLockTokens, ...entry.identityTokens)
+  }
+
+  return {
+    preferredReferences: uniqueStrings(preferredReferences),
+    latestReferences: uniqueStrings(latestReferences),
+    usedKeys: uniqueStrings(usedKeys),
+    missingKeys: uniqueStrings(missingKeys),
+    appearanceTokens: uniqueStrings(appearanceTokens),
+  }
+}
+
+function resolveLocationContinuityMemory(params: {
+  memory: WorkflowContinuityMemory
+  continuityLocationNames: string[]
+  continuityStateLocation: Record<string, unknown> | null
+}): ContinuityMemoryLocationResolution {
+  const preferredReferences: string[] = []
+  const latestReferences: string[] = []
+  const usedKeys: string[] = []
+  const missingKeys: string[] = []
+
+  const lookupRequests: Array<{ locationAssetId?: string; locationName?: string }> = []
+  if (params.continuityStateLocation) {
+    lookupRequests.push({
+      locationAssetId: typeof params.continuityStateLocation.locationAssetId === 'string'
+        ? params.continuityStateLocation.locationAssetId
+        : '',
+      locationName: typeof params.continuityStateLocation.locationName === 'string'
+        ? params.continuityStateLocation.locationName
+        : '',
+    })
+  }
+  for (const locationName of params.continuityLocationNames) {
+    lookupRequests.push({ locationName })
+  }
+
+  for (const lookupRequest of lookupRequests) {
+    const candidateKeys = getLocationContinuityMemoryCandidateKeys(lookupRequest)
+    if (candidateKeys.length === 0) continue
+    const key = candidateKeys.find((candidateKey) => params.memory.locations[candidateKey])
+      || candidateKeys[0]
+    if (!key) continue
+    const entry = params.memory.locations[key]
+    if (!entry) {
+      missingKeys.push(key)
+      continue
+    }
+    usedKeys.push(key)
+    if (entry.preferredReferenceImage) preferredReferences.push(entry.preferredReferenceImage)
+    if (entry.latestGoodImage) latestReferences.push(entry.latestGoodImage)
+  }
+
+  return {
+    preferredReferences: uniqueStrings(preferredReferences),
+    latestReferences: uniqueStrings(latestReferences),
+    usedKeys: uniqueStrings(usedKeys),
+    missingKeys: uniqueStrings(missingKeys),
+  }
+}
+
+function readContinuityMissingKinds(records: Array<Record<string, unknown>>): ContinuityKind[] {
+  return records
+    .map((record) => readContinuityKind(record.continuityKind))
+    .filter((kind): kind is ContinuityKind => kind.length > 0)
+}
+
+function hasMissingContinuityKind(
+  records: Array<Record<string, unknown>>,
+  kind: ContinuityKind,
+): boolean {
+  return records.some((record) => readContinuityKind(record.continuityKind) === kind)
+}
+
+function classifyContinuityStrength(params: {
+  previousPanelReferenceCount: number
+  characterReferenceCount: number
+  locationReferenceCount: number
+  appearanceLockTokenCount: number
+}): 'none' | 'weak' | 'moderate' | 'strong' {
+  const sourceCount = [
+    params.previousPanelReferenceCount,
+    params.characterReferenceCount,
+    params.locationReferenceCount,
+  ].filter((count) => count > 0).length
+
+  if (sourceCount === 0) return 'none'
+  if (sourceCount === 1) return params.appearanceLockTokenCount > 0 ? 'moderate' : 'weak'
+  if (sourceCount === 2) return params.appearanceLockTokenCount > 0 ? 'strong' : 'moderate'
+  return 'strong'
+}
+
+function readContinuitySourceNodeId(inputs: Record<string, unknown>): string | null {
+  const records = toObjectArray(inputs.previousPanelReferenceMeta)
+  for (const record of records) {
+    const sourceNodeId = record.sourceNodeId
+    if (typeof sourceNodeId === 'string' && sourceNodeId.trim().length > 0) {
+      return sourceNodeId.trim()
+    }
+  }
+  return null
 }
 
 /**
@@ -98,7 +403,126 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
 
     const aspectRatio = readConfigString(ctx.config, 'aspectRatio')
     const negativePrompt = readConfigString(ctx.config, 'negativePrompt')
-    const referenceImages = await normalizeStandaloneMediaInput(ctx.inputs.reference)
+    const continuityMetaRecords = readContinuityMetaRecords(ctx.inputs, 'continuityReferenceMeta')
+    const continuityMissingMeta = readContinuityMetaRecords(ctx.inputs, 'continuityMissingMeta')
+    const continuityStateCharacters = readContinuityStateCharacterSources(ctx.inputs)
+    const continuityStateLocation = readContinuityStateLocationSource(ctx.inputs)
+    const continuityStateCharacterNames = readContinuityStateCharacterNames(ctx.inputs)
+    const continuityStateAppearanceTokens = readContinuityStateAppearanceTokens(ctx.inputs)
+    const continuityMemory = normalizeWorkflowContinuityMemory(ctx.inputs.continuityMemory)
+    const previousPanelReferences = await normalizeStandaloneMediaInput(ctx.inputs.previousPanelReference)
+    const characterReferences = await normalizeStandaloneMediaInput(ctx.inputs.characterReference)
+    const locationReferences = await normalizeStandaloneMediaInput(ctx.inputs.locationReference)
+    const manualReferences = await normalizeStandaloneMediaInput(ctx.inputs.reference)
+    const continuityCharacterNames = uniqueStrings([
+      ...readContinuityCharacterNames(continuityMetaRecords),
+      ...continuityStateCharacterNames,
+    ])
+    const continuityLocationNames = uniqueStrings([
+      ...readContinuityLocationNames(continuityMetaRecords),
+      readLocationName(continuityStateLocation?.locationName),
+    ])
+    const characterMemoryResolution = resolveCharacterContinuityMemory({
+      memory: continuityMemory,
+      continuityCharacterNames,
+      continuityStateCharacters,
+    })
+    const locationMemoryResolution = resolveLocationContinuityMemory({
+      memory: continuityMemory,
+      continuityLocationNames,
+      continuityStateLocation,
+    })
+    const continuityMemoryCharacterPreferredReferences = characterMemoryResolution.preferredReferences
+    const continuityMemoryCharacterLatestReferences = characterMemoryResolution.latestReferences
+    const continuityMemoryLocationPreferredReferences = locationMemoryResolution.preferredReferences
+    const continuityMemoryLocationLatestReferences = locationMemoryResolution.latestReferences
+    const referenceImages = uniqueStrings([
+      ...previousPanelReferences,
+      ...continuityMemoryCharacterPreferredReferences,
+      ...characterReferences,
+      ...continuityMemoryCharacterLatestReferences,
+      ...locationReferences,
+      ...continuityMemoryLocationPreferredReferences,
+      ...continuityMemoryLocationLatestReferences,
+      ...manualReferences,
+    ])
+    const continuitySourceNodeId = readContinuitySourceNodeId(ctx.inputs)
+    const continuitySourceKinds = uniqueStrings([
+      ...readContinuitySourceKinds(continuityMetaRecords),
+      ...(continuityMemoryCharacterPreferredReferences.length > 0 ? ['continuity-memory-character-preferred'] : []),
+      ...(continuityMemoryCharacterLatestReferences.length > 0 ? ['continuity-memory-character-latest'] : []),
+      ...(continuityMemoryLocationPreferredReferences.length > 0 ? ['continuity-memory-location-preferred'] : []),
+      ...(continuityMemoryLocationLatestReferences.length > 0 ? ['continuity-memory-location-latest'] : []),
+    ])
+    const continuityMissingKinds = uniqueStrings(readContinuityMissingKinds(continuityMissingMeta))
+    const appearanceLockTokens = uniqueStrings([
+      ...readAppearanceLockTokens(continuityMetaRecords),
+      ...continuityStateAppearanceTokens,
+      ...characterMemoryResolution.appearanceTokens,
+    ])
+    const continuityMemoryCharacterReferenceCount = (
+      continuityMemoryCharacterPreferredReferences.length
+      + continuityMemoryCharacterLatestReferences.length
+    )
+    const continuityMemoryLocationReferenceCount = (
+      continuityMemoryLocationPreferredReferences.length
+      + continuityMemoryLocationLatestReferences.length
+    )
+    const effectiveCharacterReferenceCount = characterReferences.length + continuityMemoryCharacterReferenceCount
+    const effectiveLocationReferenceCount = locationReferences.length + continuityMemoryLocationReferenceCount
+    const continuityStrength = classifyContinuityStrength({
+      previousPanelReferenceCount: previousPanelReferences.length,
+      characterReferenceCount: effectiveCharacterReferenceCount,
+      locationReferenceCount: effectiveLocationReferenceCount,
+      appearanceLockTokenCount: appearanceLockTokens.length,
+    })
+    const warnings: string[] = []
+    if (referenceImages.length === 0) {
+      warnings.push('Continuity is weak: no usable references resolved; generation will rely on prompt only.')
+    } else if (
+      previousPanelReferences.length === 0
+      && characterReferences.length === 0
+      && locationReferences.length === 0
+      && manualReferences.length > 0
+    ) {
+      warnings.push('Continuity attribution is weak: only untagged manual references were resolved.')
+    }
+    if (hasMissingContinuityKind(continuityMissingMeta, 'previous-panel-image')) {
+      warnings.push('Previous-panel continuity source is missing output. Run the earlier panel image first.')
+    }
+    if (hasMissingContinuityKind(continuityMissingMeta, 'character-reference')) {
+      warnings.push('Character continuity source is missing output. Generate character reference nodes or bind asset references.')
+    }
+    if (hasMissingContinuityKind(continuityMissingMeta, 'location-reference')) {
+      warnings.push('Location continuity source is missing output. Generate scene/location reference nodes to stabilize background continuity.')
+    }
+    if (effectiveCharacterReferenceCount > 0 && appearanceLockTokens.length === 0) {
+      warnings.push('Character references resolved but appearance lock tokens are empty; look/outfit consistency may drift.')
+    }
+    if (
+      continuityCharacterNames.length > 0
+      && effectiveCharacterReferenceCount === 0
+    ) {
+      warnings.push('Character continuity is weak: no resolved character memory/reference found for this panel.')
+    }
+    if (
+      continuityLocationNames.length > 0
+      && effectiveLocationReferenceCount === 0
+    ) {
+      warnings.push('Location continuity is weak: no resolved location memory/reference found for this panel.')
+    }
+    if (
+      characterMemoryResolution.missingKeys.length > 0
+      && characterReferences.length === 0
+    ) {
+      warnings.push('Continuity memory miss: one or more character memory keys were not found for this panel.')
+    }
+    if (
+      locationMemoryResolution.missingKeys.length > 0
+      && locationReferences.length === 0
+    ) {
+      warnings.push('Continuity memory miss: location memory key was not found for this panel.')
+    }
     const mediaRefs: MediaRef[] = []
     for (let index = 0; index < candidateCount; index += 1) {
       const result = await generateImage(ctx.userId, imageModel, prompt, {
@@ -145,6 +569,47 @@ export const executeImageGenerate: NodeExecutor = async (ctx) => {
         mode: 'standalone',
         imageModel,
         referenceImageCount: referenceImages.length,
+        continuityReferenceCount: (
+          previousPanelReferences.length
+          + characterReferences.length
+          + locationReferences.length
+          + continuityMemoryCharacterReferenceCount
+          + continuityMemoryLocationReferenceCount
+        ),
+        previousPanelReferenceCount: previousPanelReferences.length,
+        characterReferenceCount: characterReferences.length,
+        effectiveCharacterReferenceCount,
+        locationReferenceCount: locationReferences.length,
+        effectiveLocationReferenceCount,
+        manualReferenceCount: manualReferences.length,
+        continuityMemoryReferenceCount: continuityMemoryCharacterReferenceCount + continuityMemoryLocationReferenceCount,
+        continuityMemoryCharacterReferenceCount,
+        continuityMemoryLocationReferenceCount,
+        continuityMemoryCharacterKeysUsed: characterMemoryResolution.usedKeys,
+        continuityMemoryCharacterKeysMissing: characterMemoryResolution.missingKeys,
+        continuityMemoryLocationKeysUsed: locationMemoryResolution.usedKeys,
+        continuityMemoryLocationKeysMissing: locationMemoryResolution.missingKeys,
+        continuityMemoryCharacterEntryCount: Object.keys(continuityMemory.characters).length,
+        continuityMemoryLocationEntryCount: Object.keys(continuityMemory.locations).length,
+        continuityMemoryActive: continuityMemoryCharacterReferenceCount + continuityMemoryLocationReferenceCount > 0,
+        continuityChainActive: previousPanelReferences.length > 0,
+        continuityCharacterActive: effectiveCharacterReferenceCount > 0,
+        continuityLocationActive: effectiveLocationReferenceCount > 0,
+        continuitySourceKinds,
+        continuityMissingKinds,
+        continuityMissingCount: continuityMissingMeta.length,
+        continuitySourceNodeIds: {
+          previousPanel: readContinuitySourceNodeIds(continuityMetaRecords, 'previous-panel-image'),
+          character: readContinuitySourceNodeIds(continuityMetaRecords, 'character-reference'),
+          location: readContinuitySourceNodeIds(continuityMetaRecords, 'location-reference'),
+        },
+        continuityCharacterNames,
+        continuityLocationName: continuityLocationNames[0] || null,
+        appearanceLockTokenCount: appearanceLockTokens.length,
+        appearanceLockTokens,
+        continuityStrength,
+        warnings,
+        continuitySourceNodeId,
         candidateCount: candidateImages.length,
         resolution: runtimeSelections.resolution || null,
         aspectRatio: aspectRatio || null,

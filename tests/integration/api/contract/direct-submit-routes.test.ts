@@ -56,6 +56,8 @@ const configServiceMock = vi.hoisted(() => ({
   resolveProjectModelCapabilityGenerationOptions: vi.fn(async () => ({
     resolution: '1024x1024',
   })),
+  checkRequiredModels: vi.fn(() => [] as string[]),
+  getMissingConfigError: vi.fn((missingFields: string[]) => `Missing: ${missingFields.join(', ')}`),
 }))
 
 const hasOutputMock = vi.hoisted(() => ({

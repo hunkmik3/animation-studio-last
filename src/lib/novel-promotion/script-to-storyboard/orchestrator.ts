@@ -60,6 +60,7 @@ export type ScriptToStoryboardOrchestratorInput = {
   }
   promptTemplates: ScriptToStoryboardPromptTemplates
   styleDirective?: string
+  targetPanelCount?: number
   runStep: (
     meta: ScriptToStoryboardStepMeta,
     prompt: string,
@@ -262,7 +263,7 @@ async function runStepWithRetry<T>(
 export async function runScriptToStoryboardOrchestrator(
   input: ScriptToStoryboardOrchestratorInput,
 ): Promise<ScriptToStoryboardOrchestratorResult> {
-  const { clips, novelPromotionData, promptTemplates, runStep, styleDirective } = input
+  const { clips, novelPromotionData, promptTemplates, runStep, styleDirective, targetPanelCount } = input
   if (!Array.isArray(clips) || clips.length === 0) {
     throw new Error('No clips found')
   }
@@ -310,6 +311,9 @@ export async function runScriptToStoryboardOrchestrator(
         phase1Prompt = phase1Prompt.replace('{clip_content}', `【剧本格式】\n${JSON.stringify(screenplay, null, 2)}`)
       } else {
         phase1Prompt = phase1Prompt.replace('{clip_content}', effectiveContent)
+      }
+      if (typeof targetPanelCount === 'number' && Number.isFinite(targetPanelCount) && targetPanelCount > 0) {
+        phase1Prompt = `${phase1Prompt}\n\nPanel count requirement: Return exactly ${targetPanelCount} panels in a single JSON array. Do not exceed this count.`
       }
       if (styleDirective && styleDirective.trim().length > 0) {
         phase1Prompt = `${phase1Prompt}\n\n${styleDirective}`

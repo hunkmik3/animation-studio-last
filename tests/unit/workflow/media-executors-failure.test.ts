@@ -186,6 +186,218 @@ describe('workflow media executors standalone behavior', () => {
     )
   })
 
+  it('prioritizes previous panel continuity references in standalone mode and dedupes merged references', async () => {
+    mockGenerateImage.mockResolvedValue({
+      success: true,
+      imageUrl: 'https://cdn.example.com/generated-with-chain.jpg',
+    })
+
+    const { executeImageGenerate } = await import('@/lib/workflow-engine/executors/image-generate')
+    const result = await executeImageGenerate(createContext({
+      nodeType: 'image-generate',
+      config: {
+        model: 'fal::flux-pro',
+      },
+      inputs: {
+        prompt: 'Panel 2 with continuity',
+        previousPanelReference: ['/m/panel-1-ref'],
+        previousPanelReferenceMeta: [{ sourceNodeId: 'storyboard_1__panel_1__image' }],
+        reference: ['/m/character-ref', '/m/panel-1-ref'],
+      },
+    }))
+
+    expect(mockNormalizeToOriginalMediaUrl).toHaveBeenCalledWith('/m/panel-1-ref')
+    expect(mockNormalizeToOriginalMediaUrl).toHaveBeenCalledWith('/m/character-ref')
+    expect(mockGenerateImage).toHaveBeenCalledWith(
+      'user_1',
+      'fal::flux-pro',
+      'Panel 2 with continuity',
+      expect.objectContaining({
+        referenceImages: ['/m/panel-1-ref', '/m/character-ref'],
+      }),
+    )
+    expect(result.metadata).toEqual(expect.objectContaining({
+      continuityReferenceCount: 1,
+      previousPanelReferenceCount: 1,
+      characterReferenceCount: 0,
+      locationReferenceCount: 0,
+      manualReferenceCount: 2,
+      referenceImageCount: 2,
+      continuityChainActive: true,
+      continuityStrength: 'weak',
+      continuitySourceNodeId: 'storyboard_1__panel_1__image',
+    }))
+  })
+
+  it('surfaces character/location continuity state and warnings when continuity sources are missing', async () => {
+    mockGenerateImage.mockResolvedValue({
+      success: true,
+      imageUrl: 'https://cdn.example.com/generated-with-continuity-state.jpg',
+    })
+
+    const { executeImageGenerate } = await import('@/lib/workflow-engine/executors/image-generate')
+    const result = await executeImageGenerate(createContext({
+      nodeType: 'image-generate',
+      config: {
+        model: 'fal::flux-pro',
+      },
+      inputs: {
+        prompt: 'Panel 3 escalation shot',
+        characterReference: ['/m/queen-ref'],
+        locationReference: ['/m/secret-room-ref'],
+        reference: ['/m/manual-frame'],
+        continuityReferenceMeta: [
+          {
+            continuityKind: 'character-reference',
+            sourceNodeId: 'storyboard_1__character_ref_1__image',
+            characterName: 'Clara Queen',
+            appearanceLockTokens: ['deep blue royal gown', 'silver crown'],
+            identityTokens: ['cold gaze'],
+          },
+          {
+            continuityKind: 'location-reference',
+            sourceNodeId: 'storyboard_1__scene_ref_1__image',
+            locationName: 'Secret Backroom',
+          },
+        ],
+        continuityMissingMeta: [
+          {
+            continuityKind: 'previous-panel-image',
+            sourceNodeId: 'storyboard_1__panel_2__image',
+            reason: 'source-node-output-missing',
+          },
+        ],
+      },
+    }))
+
+    expect(mockGenerateImage).toHaveBeenCalledWith(
+      'user_1',
+      'fal::flux-pro',
+      'Panel 3 escalation shot',
+      expect.objectContaining({
+        referenceImages: ['/m/queen-ref', '/m/secret-room-ref', '/m/manual-frame'],
+      }),
+    )
+    expect(result.metadata).toEqual(expect.objectContaining({
+      continuityReferenceCount: 2,
+      previousPanelReferenceCount: 0,
+      characterReferenceCount: 1,
+      locationReferenceCount: 1,
+      continuityChainActive: false,
+      continuityCharacterActive: true,
+      continuityLocationActive: true,
+      continuityStrength: 'strong',
+      continuitySourceKinds: ['character-reference', 'location-reference'],
+      continuityMissingKinds: ['previous-panel-image'],
+      continuityCharacterNames: ['Clara Queen'],
+      appearanceLockTokenCount: 3,
+      warnings: [
+        'Previous-panel continuity source is missing output. Run the earlier panel image first.',
+      ],
+    }))
+  })
+
+  it('uses workflow continuity memory as standalone reference source across panels', async () => {
+    mockGenerateImage.mockResolvedValue({
+      success: true,
+      imageUrl: 'https://cdn.example.com/generated-with-memory.jpg',
+    })
+
+    const { executeImageGenerate } = await import('@/lib/workflow-engine/executors/image-generate')
+    const result = await executeImageGenerate(createContext({
+      nodeType: 'image-generate',
+      config: {
+        model: 'fal::flux-pro',
+      },
+      inputs: {
+        prompt: 'Panel 4 continuity test',
+        continuityState: {
+          panelIndex: 3,
+          panelNumber: 4,
+          sources: {
+            characterReferences: [
+              {
+                characterName: 'Clara Queen',
+                characterAssetId: '',
+              },
+            ],
+            locationReference: {
+              locationName: 'Secret Backroom',
+              locationAssetId: '',
+            },
+          },
+          identity: {
+            characterNames: ['Clara Queen'],
+            appearanceLockTokens: ['deep blue royal gown'],
+          },
+        },
+        continuityMemory: {
+          version: 1,
+          updatedAt: '2026-04-01T12:00:00.000Z',
+          characters: {
+            'name:clara queen': {
+              canonicalName: 'Clara Queen',
+              characterAssetId: '',
+              identityTokens: ['queen'],
+              appearanceLockTokens: ['deep blue royal gown', 'silver crown'],
+              preferredReferenceImage: '/m/memory-clara-preferred',
+              latestGoodImage: '/m/memory-clara-latest',
+              sourceNodeId: 'panel_3_image',
+              sourcePanelId: 'panel_3_image',
+              sourcePanelIndex: 2,
+              sourcePanelNumber: 3,
+              continuityStrength: 'strong',
+              continuitySourceKinds: ['panel-image'],
+              updatedAt: '2026-04-01T12:00:00.000Z',
+            },
+          },
+          locations: {
+            'name:secret backroom': {
+              locationName: 'Secret Backroom',
+              locationAssetId: '',
+              preferredReferenceImage: '/m/memory-room-preferred',
+              latestGoodImage: '/m/memory-room-latest',
+              sourceNodeId: 'panel_3_image',
+              sourcePanelId: 'panel_3_image',
+              sourcePanelIndex: 2,
+              sourcePanelNumber: 3,
+              continuityStrength: 'strong',
+              continuitySourceKinds: ['panel-image'],
+              updatedAt: '2026-04-01T12:00:00.000Z',
+            },
+          },
+        },
+        reference: ['/m/manual-frame'],
+      },
+    }))
+
+    expect(mockGenerateImage).toHaveBeenCalledWith(
+      'user_1',
+      'fal::flux-pro',
+      'Panel 4 continuity test',
+      expect.objectContaining({
+        referenceImages: [
+          '/m/memory-clara-preferred',
+          '/m/memory-clara-latest',
+          '/m/memory-room-preferred',
+          '/m/memory-room-latest',
+          '/m/manual-frame',
+        ],
+      }),
+    )
+    expect(result.metadata).toEqual(expect.objectContaining({
+      continuityMemoryActive: true,
+      continuityMemoryReferenceCount: 4,
+      continuityMemoryCharacterReferenceCount: 2,
+      continuityMemoryLocationReferenceCount: 2,
+      continuityCharacterActive: true,
+      continuityLocationActive: true,
+      continuityStrength: 'strong',
+      continuityCharacterNames: ['Clara Queen'],
+      continuityLocationName: 'Secret Backroom',
+    }))
+  })
+
   it('returns candidateImages for standalone image generation when candidateCount is greater than one', async () => {
     mockGenerateImage.mockResolvedValue({
       success: true,

@@ -106,4 +106,98 @@ describe('workflow storyboard style execution', () => {
       ],
     }))
   })
+
+  it('enforces target panel count by trimming oversized storyboard results chronologically', async () => {
+    runScriptToStoryboardOrchestratorMock.mockResolvedValueOnce({
+      clipPanels: [
+        {
+          clipId: 'storyboard_node_1',
+          clipIndex: 1,
+          finalPanels: Array.from({ length: 14 }, (_, index) => ({
+            panel_number: index + 1,
+            description: `Panel ${index + 1}`,
+            location: 'Secret Backroom',
+            source_text: `Beat ${index + 1}`,
+            characters: ['Clara Queen'],
+            shot_type: 'medium',
+            camera_move: 'static',
+            video_prompt: `Motion ${index + 1}`,
+            duration: 3,
+          })),
+        },
+      ],
+      summary: {
+        clipCount: 1,
+        totalPanelCount: 14,
+        totalStepCount: 6,
+      },
+    })
+
+    const { executeStoryboard } = await import('@/lib/workflow-engine/executors/storyboard')
+    const result = await executeStoryboard(createContext({
+      config: {
+        model: 'google::gemini-2.5-pro',
+        style: 'realistic',
+        panelCount: 8,
+      },
+    }))
+
+    expect(runScriptToStoryboardOrchestratorMock).toHaveBeenCalledWith(expect.objectContaining({
+      targetPanelCount: 8,
+    }))
+    expect(result.outputs.panels).toHaveLength(8)
+    expect((result.outputs.panels as Array<Record<string, unknown>>)[0]?.source_panel_number).toBe(1)
+    expect((result.outputs.panels as Array<Record<string, unknown>>)[7]?.source_panel_number).toBe(14)
+    expect(result.metadata).toEqual(expect.objectContaining({
+      requestedPanelCount: 8,
+      generatedPanelCount: 14,
+      panelCountStatus: 'trimmed',
+    }))
+    expect(result.outputs.summary).toBe('Generated 8 storyboard panels (trimmed to target 8)')
+  })
+
+  it('surfaces under-target warnings when orchestrator returns fewer panels than requested', async () => {
+    runScriptToStoryboardOrchestratorMock.mockResolvedValueOnce({
+      clipPanels: [
+        {
+          clipId: 'storyboard_node_1',
+          clipIndex: 1,
+          finalPanels: Array.from({ length: 5 }, (_, index) => ({
+            panel_number: index + 1,
+            description: `Panel ${index + 1}`,
+            location: 'Secret Backroom',
+            source_text: `Beat ${index + 1}`,
+            characters: ['Clara Queen'],
+            shot_type: 'medium',
+            camera_move: 'static',
+            video_prompt: `Motion ${index + 1}`,
+            duration: 3,
+          })),
+        },
+      ],
+      summary: {
+        clipCount: 1,
+        totalPanelCount: 5,
+        totalStepCount: 6,
+      },
+    })
+
+    const { executeStoryboard } = await import('@/lib/workflow-engine/executors/storyboard')
+    const result = await executeStoryboard(createContext({
+      config: {
+        model: 'google::gemini-2.5-pro',
+        style: 'realistic',
+        panelCount: 8,
+      },
+    }))
+
+    expect(result.outputs.panels).toHaveLength(5)
+    expect(result.metadata).toEqual(expect.objectContaining({
+      requestedPanelCount: 8,
+      generatedPanelCount: 5,
+      panelCountStatus: 'under-target',
+      panelCountWarning: 'Storyboard generated 5 panels, lower than requested target 8.',
+    }))
+    expect(result.outputs.summary).toBe('Generated 5 storyboard panels (below requested target 8)')
+  })
 })
